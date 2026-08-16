@@ -1,8 +1,20 @@
 {
-  "name": "@yfj22011/dsh-hippocampus",
+  "name": "@yfj935539/dsh-hippocampus",
   "version": "0.4.0",
   "private": true,
   "description": "DeepSeek Harness plugin: persistent hippocampus memory with a 3D spherical neural-network visualization, unified cross-workspace store, hourly trajectory feeding, and pre-turn memory injection into the model prompt.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yfj935539/dsh-hmtsjwl.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory",
+    "hippocampus",
+    "neural-network",
+    "vector-database"
+  ],
   "type": "module",
   "main": "lib/index.js",
   "exports": {

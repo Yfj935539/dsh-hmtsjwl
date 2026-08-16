@@ -2,13 +2,13 @@
 
 A DeepSeek Harness plugin that gives agents persistent long-term memory: **3D spherical neural-network visualization**, a unified cross-workspace memory store, hourly trajectory feeding, and automatic **pre-turn memory injection** into the model prompt.
 
-Repository: https://gitee.com/yfj22011/dshmy
+Repository: https://github.com/Yfj935539/dsh-hmtsjwl
 
 ## Installation
 
 ```bash
-git clone https://gitee.com/yfj22011/dshmy.git
-cd dshmy/packages/dsh-hippocampus
+git clone https://github.com/Yfj935539/dsh-hmtsjwl.git
+cd dsh-hmtsjwl/packages/dsh-hippocampus
 node install.mjs
 ```
 
