@@ -2,13 +2,13 @@
 
 DeepSeek Harness 插件：为 Agent 提供长期记忆能力 —— **3D 球形神经网络可视化**、跨工作区统一的记忆库、每小时轨迹自动喂养、以及**对话前自动注入**关键记忆。
 
-仓库地址：https://gitee.com/yfj22011/dshmy
+仓库地址：https://github.com/Yfj935539/dsh-hmtsjwl
 
 ## 安装
 
 ```bash
-git clone https://gitee.com/yfj22011/dshmy.git
-cd dshmy/packages/dsh-hippocampus
+git clone https://github.com/Yfj935539/dsh-hmtsjwl.git
+cd dsh-hmtsjwl/packages/dsh-hippocampus
 node install.mjs
 ```
 
