@@ -1,82 +1,50 @@
-# dsh-hippocampus
+# dsh-hippocampus — 海马体记忆 Agent
 
-DeepSeek Harness plugin that gives agents persistent long-term memory with a **3D spherical neural-network visualization**, a unified cross-workspace memory store, hourly trajectory feeding, and automatic **pre-turn memory injection** into the model prompt.
+DeepSeek Harness 插件：为 Agent 提供长期记忆能力 —— **3D 球形神经网络可视化**、跨工作区统一的记忆库、每小时轨迹自动喂养、以及**对话前自动注入**关键记忆。
 
-Repo: https://gitee.com/yfj22011/mht
+仓库地址：https://gitee.com/yfj22011/dshmy
 
-## Installation
+## 安装
 
 ```bash
-git clone https://gitee.com/yfj22011/mht.git
-cd mht/packages/dsh-hippocampus
+git clone https://gitee.com/yfj22011/dshmy.git
+cd dshmy/packages/dsh-hippocampus
 node install.mjs
 ```
 
-Or, once published to a DSH Hub–style registry:
+重启 DeepSeek Harness 后，在「对话 / 轨迹」之后出现「记忆」标签页。
 
-```bash
-npx -p @deepseek-ai/dsh dsh plugin --profile web add github:<yourname>/mht#<commit>
-```
+## 功能
 
-Then restart DeepSeek Harness. A **记忆 (Memory)** tab appears after **对话 / 轨迹**.
-
-## Usage
-
-The plugin registers memory tools and injects a compact memory pack into the system prompt before every turn:
-
-| Tool | Purpose |
+| 能力 | 说明 |
 | --- | --- |
-| `memory_write` | Write or update a memory (auto dedup ≥0.9, auto tags, synaptic links) |
-| `memory_read` | Read memories by id / kind / keyword |
-| `memory_search` | Hybrid retrieval: lexical + semantic vector + associative (synaptic) expansion |
-| `memory_edit` | Correct/archive a memory (history recorded, vector re-embedded) |
-| `memory_forget` | Archive (default) or hard-delete a memory |
-| `memory_stats` | Memory health: counts, strength, synapses, epochs, size, feeding status |
-| `memory_context` | Compact memory pack for long-session context refresh (anti context pollution) |
-| `memory_evolve` | Merge near-duplicates, prune weak synapses, advance generation |
+| 统一记忆库 | 所有记忆保存在同一记录（`$DSH_HOME/storages/hippocampus/memory.db`），**跨工作区目录打通**；旧版按项目分库的数据启动时自动合并 |
+| 3D 球形神经网络 | 球心 = 偏好/交流核心节点（永不自动衰减）；第一层球面 = 工作区目录节点（与核心**永久连接**）；外球面 = 衍生记忆（按所属工作区方向扩散）；拖拽旋转、滚轮缩放、双击重置 |
+| 动态连接 | 两节点交流（检索共激活）自动建连/强化（Hebbian）；**3 天无交互传输自动断开**；偏好/交流 ↔ 工作区目录为永久连接，除非用户主动归档工作区（右键节点） |
+| 对话前记忆注入 | 每次对话 turn 前自动把关键记忆 + 最新工作状态注入系统提示；`DSH_HIPPOCAMPUS_PROMPT=0` 可关闭 |
+| 每小时轨迹喂养 | 自动提炼会话轨迹（信号句 + 高频词）写入「会话精华」分支；「喂养轨迹」按钮全量喂养整个对话历史 |
+| 自动维护 | 1GB 上限超限自动优化；过期记忆（>30 天）检索降权与清理；1000 节点上限自动淘汰最弱（工作状态/精华豁免） |
+| 写入智能 | 自动去重合并（≥0.9 同种类）、自动高频词标签、与最相似记忆建立突触连接 |
 
-### Pre-turn memory injection
+## Agent 工具
 
-Before each model step, the plugin renders a dynamic prompt section (`hippocampus:memory`) with the top memories (strength×0.6 + freshness×0.4) and the latest workstate — no manual tool call needed. Disable with `DSH_HIPPOCAMPUS_PROMPT=0`.
+`memory_write` · `memory_read` · `memory_search` · `memory_edit` · `memory_forget` · `memory_stats` · `memory_context` · `memory_evolve`
 
-### 3D spherical neural network
+## 配置
 
-- **Core**: preference / communication memories at the sphere center (never decay).
-- **Workspace ring**: one node per workspace directory, permanently linked to every core node (weight 0.55, exempt from TTL, decay and stale cleanup — unless the user explicitly archives the workspace via right-click).
-- **Memory shell**: derived memories (workstate / insight / other) spread on the outer sphere by workspace direction.
-- Interactions: drag = rotate, wheel = zoom, click = inspect, double-click = reset view.
-
-### Dynamic connections
-
-- Co-activated memories (retrieved together) strengthen their link (Hebbian).
-- Links with no transfer for **3 days** are automatically broken (`LINK_TTL_DAYS`).
-- Preference/communication ↔ workspace links are permanent.
-
-### Automatic maintenance
-
-- **Hourly trajectory feeding**: reads the current conversation trajectory (`sessionQuery.readSurface`) and distills key sentences + high-frequency words into a "会话精华" branch (full-history feeding via the 喂养轨迹 button).
-- **1 GB size cap** per unified store: over-limit auto-optimization (distill → delete stale → VACUUM).
-- **Stale memories (>30 days)**: retrieval down-weighting ×0.55 (core nodes exempt); weak stale memories auto-archived/deleted.
-- **1000 node cap**: weakest nodes auto-culled (workstate/精华 exempt) via `DSH_HIPPOCAMPUS_MAX_NODES`.
-- **Unified store**: all memories live in one SQLite+vector database (`$DSH_HOME/storages/hippocampus/memory.db`), shared across all workspace directories (old per-project stores are auto-merged once at startup).
-
-### Configuration
-
-| Env | Default | Meaning |
+| 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `DSH_HIPPOCAMPUS_FEED_MS` | `3600000` | Trajectory feeding interval (ms) |
-| `DSH_HIPPOCAMPUS_SIZE_LIMIT` | `1073741824` | Store size cap (bytes), auto-optimize when exceeded |
-| `DSH_HIPPOCAMPUS_MAX_NODES` | `1000` | Active memory node cap |
-| `DSH_HIPPOCAMPUS_PROMPT` | (on) | Set `0` to disable pre-turn memory injection |
+| `DSH_HIPPOCAMPUS_FEED_MS` | `3600000` | 轨迹喂养间隔（毫秒） |
+| `DSH_HIPPOCAMPUS_SIZE_LIMIT` | `1073741824` | 记忆库上限（字节），超限自动优化 |
+| `DSH_HIPPOCAMPUS_MAX_NODES` | `1000` | 活跃节点上限 |
+| `DSH_HIPPOCAMPUS_PROMPT` | 开 | 设为 `0` 关闭对话前记忆注入 |
 
-## Architecture
+## 架构
 
-| Half | File | Responsibility |
+| 半边 | 文件 | 职责 |
 | --- | --- | --- |
-| Host | `lib/index.js` | `HippocampusDb` (SQLite-vec + bge-small-zh embedding + decay + hybrid retrieval + synapses + evolution), `hippocampus` Remote service, memory tools, prompt-section injection, hourly feeding scheduler |
-| Browser | `lib/client.js` | 记忆 tab: 3D spherical neural-network canvas, branch list/editor, evolution/prune/feed controls (self-contained bundle) |
-
-Storage: `$DSH_HOME/storages/hippocampus/memory.db` — `branches` (metadata), `memories` (vec0 embeddings), `links` (synapses), `workdirs` (workspace nodes), `meta`.
+| 宿主端 | `lib/index.js` | 统一记忆库（SQLite-vec + bge 语义编码）、3D 图数据、突触/演化/清理、轨迹喂养调度、对话前记忆注入、记忆工具注册 |
+| 浏览器端 | `lib/client.js` | 「记忆」标签页：3D 球形神经网络画布、分支列表/编辑、演化/修剪/喂养控制（自包含 bundle） |
 
 ## License
 
