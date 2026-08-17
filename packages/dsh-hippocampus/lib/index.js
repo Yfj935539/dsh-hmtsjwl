@@ -2993,15 +2993,17 @@ function defineMemoryTools(service) {
       }
       const { branch, dedup, mergedInto } = await viaService(service, "create", { title: args.title, content: args.content, kind: args.kind, tags: args.tags ?? [], strength: args.strength, source: "agent", scope, scopePath, sessionId }, agent);
       if (args.kind === "workstate" && !dedup) await viaService(service, "reportWork", { task: args.title, phase: "写入", progress: null, scope, scopePath }, agent).catch(() => {});
-      return {
+      // v5.2：mergedInto 仅去重命中时输出（null 会被工具输出 schema 判为非 string）
+      const out = {
         ok: true,
         branch,
         dedup,
-        mergedInto,
         message: dedup
           ? "检测到相似记忆（已合并强化原记忆，未重复入库）: " + branchSummary(branch)
           : "记忆已写入: " + branchSummary(branch)
       };
+      if (dedup && mergedInto) out.mergedInto = mergedInto;
+      return out;
     }
   }));
 
