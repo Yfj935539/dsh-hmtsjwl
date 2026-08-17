@@ -126,15 +126,20 @@ function MemoryView(props) {
 		setLoading(true);
 		setError(null);
 		try {
-			// 并行拉取列表与图（此前串行导致切换项目时加载明显变慢）
-			const [listRes, graphRes] = await Promise.all([
+			// 并行拉取列表/图/统计（统计附带激活锚点 → 金色锚环可视化）
+			const [listRes, graphRes, statsRes] = await Promise.all([
 				remoteCall(ctx, "list", { includeArchived: true, ...scopeArgs }),
-				remoteCall(ctx, "graph", scopeArgs).catch(() => ({ ok: false }))
+				remoteCall(ctx, "graph", scopeArgs).catch(() => ({ ok: false })),
+				remoteCall(ctx, "stats", scopeArgs).catch(() => ({ ok: false }))
 			]);
 			if (!listRes.ok) throw new Error(listRes.error?.message ?? "list failed");
 			setBranches(listRes.value.branches ?? []);
 			setMeta(listRes.value.meta ?? null);
 			if (graphRes.ok) setGraph(graphRes.value);
+			if (statsRes.ok) {
+				const an = statsRes.value?.anchors ?? [];
+				if (an.length) setAnchors(new Set(an.map((a) => String(a.id))));
+			}
 			// 写回模块级缓存，供其它会话/窗口点开即展示
 			MEM_CACHE.branches = listRes.value.branches ?? [];
 			MEM_CACHE.meta = listRes.value.meta ?? null;
@@ -176,6 +181,7 @@ function MemoryView(props) {
 	// → 把【真实命中分数】与【真实共激活边】挂到画布。画布上的激活/脉冲/命中环都是这次检索
 	// 的真实结果投射，而非客户端近似或装饰动画。
 	const [graphHits, setGraphHits] = useState(null);
+	const [anchors, setAnchors] = useState(() => new Set());
 	useEffect(() => {
 		const q = search.trim();
 		if (!q) { setGraphHits(null); return; }
@@ -186,6 +192,9 @@ function MemoryView(props) {
 				const hits = new Map((res.value?.results ?? []).map((r) => [String(r.branch?.id), Number(r.score ?? 0)]));
 				const edges = (res.value?.signals?.edges ?? []).map((e) => ({ a: String(e.a), b: String(e.b), weight: Number(e.weight ?? 0) }));
 				setGraphHits({ q: q.toLowerCase(), hits, edges, at: Date.now() });
+				// v5.4：检索响应带激活锚点 → 金色锚环实时更新
+				const an = res.value?.anchors ?? [];
+				if (an.length) setAnchors(new Set(an.map((a) => String(a.id))));
 			} catch { /* 检索失败忽略，画布保持静态真实投射 */ }
 		}, 250);
 		return () => clearTimeout(timer);
@@ -539,7 +548,10 @@ function MemoryView(props) {
 					t("legend.activation")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-size" }),
-					t("legend.links")))),
+					t("legend.links")),
+				h("div", { className: "hp-legend-hint" },
+					h("span", { className: "hp-legend-anchor" }),
+					"金色锚环 = 工作记忆激活"))),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
 				h("i", { style: { color: "#7fa8ff" } }),
@@ -649,7 +661,8 @@ function MemoryView(props) {
 							searchHits: graphHits,
 							onArchiveWorkdir: archiveWorkdir,
 							focusMode,
-							onToggleFocus: () => setFocusMode((v) => !v)
+							onToggleFocus: () => setFocusMode((v) => !v),
+							anchors
 						}),
 							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },

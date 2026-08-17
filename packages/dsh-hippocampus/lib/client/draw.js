@@ -40,10 +40,12 @@ function distToSeg(px, py, x1, y1, x2, y2) {
 }
 
 // 3D 球形渲染 —— 旋转 + 透视投影 + 深度排序 + 背面衰减
-function draw(canvas, sim, selectedId, size, searchQuery, view) {
+// v5.4：draw 增加 anchors 参数（激活锚点集合 → 金色锚环 + 呼吸脉冲可视化工作记忆）
+function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 	if (!canvas || size.w === 0) return;
 	const ctx = canvas.getContext("2d");
 	if (!ctx) return;
+	const anchorSet = anchors && anchors.size ? anchors : null;
 	const dpr = Math.min(2, window.devicePixelRatio || 1);
 	const w = size.w;
 	const h = size.h;
@@ -346,7 +348,33 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 			ctx.arc(p.sx, p.sy, r + 2, 0, Math.PI * 2);
 			ctx.stroke();
 		}
+		// v5.4 激活锚点：金色锚环 + 呼吸脉冲 —— 可视化「当前工作记忆中激活的记忆」
+		// （仅未被选中/高亮环覆盖时显示，避免视觉叠加）
+		if (anchorSet && anchorSet.has(node.id) && !highlighted) {
+			const breath = 0.5 + 0.5 * Math.sin(sim.t * 0.05 + (hash01(node.id) * 6.28));
+			const ar = r + 7 + breath * 2;
+			ctx.shadowBlur = 0;
+			ctx.strokeStyle = "rgba(255,212,121," + (0.30 + breath * 0.35).toFixed(2) + ")";
+			ctx.lineWidth = 1.4;
+			ctx.beginPath();
+			ctx.arc(p.sx, p.sy, ar, 0, Math.PI * 2);
+			ctx.stroke();
+			// 内圈细点环（锚定感）
+			ctx.strokeStyle = "rgba(255,212,121," + (0.16 + breath * 0.2).toFixed(2) + ")";
+			ctx.setLineDash([2, 3]);
+			ctx.beginPath();
+			ctx.arc(p.sx, p.sy, ar + 3, 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.setLineDash([]);
+		}
 	}
+}
+
+// 字符串哈希（锚点呼吸相位用，与 sim.js 同构）
+function hash01(str) {
+	let x = 0;
+	for (let i = 0; i < str.length; i++) x = (x * 31 + str.charCodeAt(i)) >>> 0;
+	return x / 4294967296;
 }
 
 exports.draw = draw;

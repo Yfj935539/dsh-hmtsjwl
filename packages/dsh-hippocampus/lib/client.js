@@ -13,7 +13,7 @@ const { buildSim } = require("../sim.js");
 const { rotate3 } = require("../sim.js");
 const { draw } = require("../draw.js");
 
-function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus }) {
+function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus, anchors }) {
 	const canvasRef = useRef(null);
 	const wrapRef = useRef(null);
 	const simRef = useRef(null);
@@ -29,6 +29,10 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	useEffect(() => {
 		if (simRef.current) simRef.current.searchHits = searchHits;
 	}, [searchHits]);
+
+	// v5.4：激活锚点经 ref 传递（避免 rAF tick 依赖数组重建）
+	const anchorsRef = useRef(anchors);
+	useEffect(() => { anchorsRef.current = anchors; }, [anchors]);
 
 	const onWheel = (e) => {
 		e.preventDefault();
@@ -180,7 +184,7 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 				}
 				draw(canvasRef.current, sim, selectedId, sizeRef.current, searchQuery && searchQuery.trim() ? searchQuery.trim() : null, {
 					rotX: sim.rotX, rotY: sim.rotY, zoom: zoomRef.current, dragging: cam.dragging
-				});
+				}, anchorsRef.current);
 			}
 			raf = requestAnimationFrame(tick);
 		};
@@ -563,10 +567,12 @@ function distToSeg(px, py, x1, y1, x2, y2) {
 }
 
 // 3D 球形渲染 —— 旋转 + 透视投影 + 深度排序 + 背面衰减
-function draw(canvas, sim, selectedId, size, searchQuery, view) {
+// v5.4：draw 增加 anchors 参数（激活锚点集合 → 金色锚环 + 呼吸脉冲可视化工作记忆）
+function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 	if (!canvas || size.w === 0) return;
 	const ctx = canvas.getContext("2d");
 	if (!ctx) return;
+	const anchorSet = anchors && anchors.size ? anchors : null;
 	const dpr = Math.min(2, window.devicePixelRatio || 1);
 	const w = size.w;
 	const h = size.h;
@@ -869,7 +875,33 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 			ctx.arc(p.sx, p.sy, r + 2, 0, Math.PI * 2);
 			ctx.stroke();
 		}
+		// v5.4 激活锚点：金色锚环 + 呼吸脉冲 —— 可视化「当前工作记忆中激活的记忆」
+		// （仅未被选中/高亮环覆盖时显示，避免视觉叠加）
+		if (anchorSet && anchorSet.has(node.id) && !highlighted) {
+			const breath = 0.5 + 0.5 * Math.sin(sim.t * 0.05 + (hash01(node.id) * 6.28));
+			const ar = r + 7 + breath * 2;
+			ctx.shadowBlur = 0;
+			ctx.strokeStyle = "rgba(255,212,121," + (0.30 + breath * 0.35).toFixed(2) + ")";
+			ctx.lineWidth = 1.4;
+			ctx.beginPath();
+			ctx.arc(p.sx, p.sy, ar, 0, Math.PI * 2);
+			ctx.stroke();
+			// 内圈细点环（锚定感）
+			ctx.strokeStyle = "rgba(255,212,121," + (0.16 + breath * 0.2).toFixed(2) + ")";
+			ctx.setLineDash([2, 3]);
+			ctx.beginPath();
+			ctx.arc(p.sx, p.sy, ar + 3, 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.setLineDash([]);
+		}
 	}
+}
+
+// 字符串哈希（锚点呼吸相位用，与 sim.js 同构）
+function hash01(str) {
+	let x = 0;
+	for (let i = 0; i < str.length; i++) x = (x * 31 + str.charCodeAt(i)) >>> 0;
+	return x / 4294967296;
 }
 
 exports.draw = draw;
@@ -1475,15 +1507,20 @@ function MemoryView(props) {
 		setLoading(true);
 		setError(null);
 		try {
-			// 并行拉取列表与图（此前串行导致切换项目时加载明显变慢）
-			const [listRes, graphRes] = await Promise.all([
+			// 并行拉取列表/图/统计（统计附带激活锚点 → 金色锚环可视化）
+			const [listRes, graphRes, statsRes] = await Promise.all([
 				remoteCall(ctx, "list", { includeArchived: true, ...scopeArgs }),
-				remoteCall(ctx, "graph", scopeArgs).catch(() => ({ ok: false }))
+				remoteCall(ctx, "graph", scopeArgs).catch(() => ({ ok: false })),
+				remoteCall(ctx, "stats", scopeArgs).catch(() => ({ ok: false }))
 			]);
 			if (!listRes.ok) throw new Error(listRes.error?.message ?? "list failed");
 			setBranches(listRes.value.branches ?? []);
 			setMeta(listRes.value.meta ?? null);
 			if (graphRes.ok) setGraph(graphRes.value);
+			if (statsRes.ok) {
+				const an = statsRes.value?.anchors ?? [];
+				if (an.length) setAnchors(new Set(an.map((a) => String(a.id))));
+			}
 			// 写回模块级缓存，供其它会话/窗口点开即展示
 			MEM_CACHE.branches = listRes.value.branches ?? [];
 			MEM_CACHE.meta = listRes.value.meta ?? null;
@@ -1525,6 +1562,7 @@ function MemoryView(props) {
 	// → 把【真实命中分数】与【真实共激活边】挂到画布。画布上的激活/脉冲/命中环都是这次检索
 	// 的真实结果投射，而非客户端近似或装饰动画。
 	const [graphHits, setGraphHits] = useState(null);
+	const [anchors, setAnchors] = useState(() => new Set());
 	useEffect(() => {
 		const q = search.trim();
 		if (!q) { setGraphHits(null); return; }
@@ -1535,6 +1573,9 @@ function MemoryView(props) {
 				const hits = new Map((res.value?.results ?? []).map((r) => [String(r.branch?.id), Number(r.score ?? 0)]));
 				const edges = (res.value?.signals?.edges ?? []).map((e) => ({ a: String(e.a), b: String(e.b), weight: Number(e.weight ?? 0) }));
 				setGraphHits({ q: q.toLowerCase(), hits, edges, at: Date.now() });
+				// v5.4：检索响应带激活锚点 → 金色锚环实时更新
+				const an = res.value?.anchors ?? [];
+				if (an.length) setAnchors(new Set(an.map((a) => String(a.id))));
 			} catch { /* 检索失败忽略，画布保持静态真实投射 */ }
 		}, 250);
 		return () => clearTimeout(timer);
@@ -1888,7 +1929,10 @@ function MemoryView(props) {
 					t("legend.activation")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-size" }),
-					t("legend.links")))),
+					t("legend.links")),
+				h("div", { className: "hp-legend-hint" },
+					h("span", { className: "hp-legend-anchor" }),
+					"金色锚环 = 工作记忆激活"))),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
 				h("i", { style: { color: "#7fa8ff" } }),
@@ -1998,7 +2042,8 @@ function MemoryView(props) {
 							searchHits: graphHits,
 							onArchiveWorkdir: archiveWorkdir,
 							focusMode,
-							onToggleFocus: () => setFocusMode((v) => !v)
+							onToggleFocus: () => setFocusMode((v) => !v),
+							anchors
 						}),
 							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },

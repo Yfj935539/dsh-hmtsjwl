@@ -258,6 +258,74 @@ function safeJsonArray(raw, def) {
     return JSON.parse(def);
   }
 }
+
+/**
+ * v5.4 激活锚点（工作记忆延续）：
+ * 人脑的「工作记忆」—— 当前任务中被激活的记忆在短时内保持高可用（priming 效应）。
+ * 检索/读取/对话注入命中某记忆 → 该记忆成为激活锚点；随后检索按锚点加权
+ * （提高「接着上次想」的召回）、注入优先携带锚点记忆，形成跨轮的思考连续性。
+ * 锚点带强度与 TTL（默认 10 分钟），容量受限，最弱/最旧自动淘汰。
+ */
+class AnchorBank {
+  constructor({ ttlMs = 10 * 60000, max = 24 } = {}) {
+    this.map = new Map(); // id -> { weight, at }
+    this.ttlMs = ttlMs;
+    this.max = max;
+  }
+  /** 激活一批记忆（增量合并强度、刷新时间） */
+  activate(ids, base = 0.5) {
+    if (!Array.isArray(ids)) return;
+    const nowMs = now();
+    for (const id of ids) {
+      if (typeof id !== "string" || !id) continue;
+      const cur = this.map.get(id);
+      const w = clamp((cur ? cur.weight : 0) + base, 0, 1);
+      this.map.set(id, { weight: w, at: nowMs });
+    }
+    this._evict(nowMs);
+  }
+  /** 是否锚定 */
+  has(id) {
+    const a = this.map.get(id);
+    return !!a && now() - a.at < this.ttlMs;
+  }
+  /** 锚点当前强度（随时间线性衰减到 50%；过期 0） */
+  weight(id) {
+    const a = this.map.get(id);
+    if (!a) return 0;
+    const age = (now() - a.at) / this.ttlMs;
+    if (age >= 1) return 0;
+    return a.weight * (1 - age * 0.5);
+  }
+  /** 当前锚点列表（按强度排序，限 limit） */
+  list(limit = 16) {
+    const nowMs = now();
+    return [...this.map.entries()]
+      .map(([id, a]) => ({ id, weight: a.weight, at: a.at, alive: nowMs - a.at < this.ttlMs }))
+      .filter((x) => x.alive)
+      .sort((a, b) => b.weight - a.weight || a.at - b.at)
+      .slice(0, limit);
+  }
+  /** 超过容量 1.5 倍时淘汰最弱/最旧 */
+  _evict(nowMs) {
+    if (this.map.size <= this.max * 1.5) return;
+    const items = [...this.map.entries()].sort((a, b) =>
+      (b[1].weight - a[1].weight) || (a[1].at - b[1].at));
+    while (this.map.size > this.max && items.length) {
+      const [id] = items.pop();
+      this.map.delete(id);
+    }
+  }
+  /** 清理过期锚点（定时/注入前调用） */
+  purge(nowMs = now()) {
+    for (const [id, a] of this.map) {
+      if (nowMs - a.at > this.ttlMs) this.map.delete(id);
+    }
+  }
+  clear() {
+    this.map.clear();
+  }
+}
 /** 简单分词：拉丁词 + 中文单字与二元组 */
 function tokensOf(text) {
   const s = String(text ?? "");
@@ -332,13 +400,14 @@ function extractBlocks(content, out) {
   }
 }
 
-/** 提取消息文本（兼容 user/message、assistant/message、tool/result 各种 data 形状） */
+/** 提取消息文本（兼容 user/message、assistant/message、tool/result、UserMessage 各种 data 形状） */
 function messageTextOf(ev) {
   const out = [];
   const data = ev?.data ?? ev;
   if (Array.isArray(data?.content)) extractBlocks(data.content, out);
   if (data?.message && Array.isArray(data.message.content)) extractBlocks(data.message.content, out);
   if (typeof data?.text === "string") out.push(data.text);
+  if (typeof data?.content === "string") out.push(data.content); // UserMessage 的 content 可能是纯文本
   return out.join(" ").replace(/\s+/g, " ").trim();
 }
 
@@ -516,10 +585,12 @@ function seedBranch(title, content, kind, tags, strength) {
 }
 
 class HippocampusDb {
-  constructor(scope, projectPath) {
+  constructor(scope, projectPath, anchorBank = null) {
     // v3.2：统一记忆库 —— 所有信息内容记忆在同一记录中，跨工作区目录打通
     this.scope = "unified";
     this.projectPath = projectPath ?? null;
+    // v5.4：激活锚点（工作记忆延续）—— 由工厂注入，统一库单例共享
+    this.anchors = anchorBank;
     fs.mkdirSync(storeDir(scope, projectPath), { recursive: true });
     this.db = new Database(dbFile(scope, projectPath));
     this.db.loadExtension(getLoadablePath());
@@ -1108,8 +1179,16 @@ class HippocampusDb {
     // 避免两个不同项目里语义相似但内容独立的记忆被错误合并、导致各项目细节互相污染/丢失。
     const text = [branch.title, branch.tags.join(" "), branch.content].filter(Boolean).join("。");
     const vec = await embedText(text);
+    let relatedList = [];
     if (vec) {
-      const sim = await this.findSimilar(vec, { limit: 3 });
+      const sim = await this.findSimilar(vec, { limit: 5 });
+      // v5.4 相关记忆提示：0.5~0.9 相似（未达合并阈值）的记忆标记为「相关」，
+      // 随写入结果返回 —— Agent 可感知「新记忆与哪些旧记忆存在关联」
+      for (const s of sim) {
+        if (s.s >= 0.5 && s.s < DEDUP_THRESHOLD) {
+          relatedList.push({ id: s.b.id, title: s.b.title, score: Number(s.s.toFixed(2)) });
+        }
+      }
       const top = sim.find((s) =>
         s.s >= DEDUP_THRESHOLD && s.b.kind === branch.kind && s.b.status === "active"
         && (this.isCoreBranch(branch) || this.isCoreBranch(s.b) || !branch.scopePath || !s.b.scopePath
@@ -1145,7 +1224,7 @@ class HippocampusDb {
           if (nv) this.storeEmbedding(existing.rowId, nv);
         }
         this.invalidateActiveCache();
-        return { branch: this.getByUid(existing.id), dedup: true, mergedInto: existing.id };
+        return { branch: this.getByUid(existing.id), dedup: true, mergedInto: existing.id, related: relatedList.slice(0, 3) };
       }
       // 建立突触：与新记忆最相似的 top3 连接（权重=相似度）
       for (const s of sim) {
@@ -1160,10 +1239,30 @@ class HippocampusDb {
       branch.createdAt, branch.updatedAt, branch.lastAccessAt, JSON.stringify(branch.history)
     );
     if (vec) this.storeEmbedding(r.lastInsertRowid, vec);
+    // v5.4 归纳连线：像人脑一样把「同时出现 / 同主题 / 同项目」的记忆关联起来 ——
+    // ① 同会话近 24h 记忆（时序经历）② 同项目近 24h 记忆 ③ 同项目同种类 ④ 共享 ≥2 标签
+    try {
+      const tsCut = now() - 24 * 3600000;
+      const recent = this.db.prepare(
+        "SELECT uid, session_id, scope_path, tags, kind FROM branches WHERE status='active' AND created_at > ? AND uid != ? LIMIT 40"
+      ).all(tsCut, branch.uid);
+      for (const rw of recent) {
+        let w = 0;
+        if (branch.sessionId && rw.session_id && rw.session_id === branch.sessionId) w = Math.max(w, 0.5);
+        if (branch.scopePath && rw.scope_path && this.sameProject(branch.scopePath, rw.scope_path)) {
+          w = Math.max(w, rw.kind === branch.kind ? 0.4 : 0.3);
+        }
+        if (w === 0 && branch.tags.length) {
+          const shared = safeJsonArray(rw.tags, "[]").filter((t) => branch.tags.includes(t)).length;
+          if (shared >= 2) w = 0.3;
+        }
+        if (w > 0) this.setLink(branch.uid, rw.uid, w);
+      }
+    } catch { /* 归纳连线失败不影响写入 */ }
     this.invalidateActiveCache();
     // v3.2：节点上限检查（超过 1000 自动淘汰最弱）
     try { this.enforceNodeCap(); } catch { /* 淘汰失败不影响写入 */ }
-    return { branch: this.getByUid(branch.uid), dedup: false, mergedInto: null };
+    return { branch: this.getByUid(branch.uid), dedup: false, mergedInto: null, related: relatedList.slice(0, 3) };
   }
 
   async updateBranch(uid, patch, by) {
@@ -1282,15 +1381,17 @@ class HippocampusDb {
     };
   }
 
-  /** 读取单条（触发再巩固） */
+  /** 读取单条（触发再巩固 + 激活锚点） */
   getBranch(uid) {
     const b = this.getByUid(uid);
     if (!b) throw new Error("hippocampus.get: 记忆不存在: " + uid);
     b.strength = clamp(b.strength + RECONSOLIDATE_BOOST, 0, 1);
     b.lastAccessAt = now();
     this.db.prepare("UPDATE branches SET strength=?, last_access_at=? WHERE uid=?").run(b.strength, b.lastAccessAt, uid);
+    // v5.4：精确读取同样激活锚点（人脑「聚焦回忆」= 工作记忆置顶）
+    if (this.anchors) this.anchors.activate([uid], 0.6);
     this.invalidateActiveCache();
-    return { branch: this.sanitize(b) };
+    return { branch: this.sanitize(b), anchors: this.anchors ? this.anchors.list(16).map((a) => ({ id: a.id, weight: Number(a.weight.toFixed(3)) })) : [] };
   }
 
   /** 三阶段检索：词法 + 语义(向量) + 联想(图扩散)，共激活 Hebbian 强化；projectPath 为当前项目上下文 */
@@ -1352,6 +1453,15 @@ class HippocampusDb {
     // 其他项目记忆降权但不隔离；偏好/交流/无项目的全局记忆不降权。
     fused = fused.map((x) => ({ b: x.b, s: x.s * this.projectWeight(x.b, projectPath) })).sort((x, y) => y.s - x.s);
 
+    // v5.4 锚点加权：当前工作记忆中已激活的记忆优先召回（人脑 priming 效应 ——
+    // 「接着上次想的继续想」）。锚点强度越高加成越大（最高 ×1.25）。
+    if (this.anchors) {
+      fused = fused.map((x) => {
+        const aw = this.anchors.weight(x.b.id);
+        return aw > 0 ? { b: x.b, s: x.s * (1 + aw * 0.25) } : x;
+      }).sort((x, y) => y.s - x.s);
+    }
+
     // 阶段 3：联想扩散 —— 从 top5 沿相似图（向量 + 突触连接）取邻居
     if (fused.length > 0) {
       const seeds = fused.slice(0, 5);
@@ -1387,13 +1497,20 @@ class HippocampusDb {
       b.lastAccessAt = now();
       this.db.prepare("UPDATE branches SET strength=?, last_access_at=? WHERE id=?").run(b.strength, b.lastAccessAt, b.id);
     }
+    // v5.4 激活锚点：检索命中前 5 条成为工作记忆锚点（下次检索/注入优先，人脑延续性）
+    if (this.anchors) {
+      this.anchors.activate(fused.slice(0, 5).map((x) => x.b.id), 0.5);
+      this.anchors.purge();
+    }
     return {
       results: fused.map(({ b, s }) => ({ branch: this.sanitize(b), score: Number(clamp(s, 0, 1).toFixed(3)) })),
       signals: {
         hits: fused.map(({ b, s }) => ({ id: b.id, score: Number(clamp(s, 0, 1).toFixed(3)) })),
         edges: signalEdges,
         transmitted: signalEdges.length
-      }
+      },
+      // v5.4：返回当前激活锚点（供前端金色锚环可视化 + Agent 感知工作记忆）
+      anchors: this.anchors ? this.anchors.list(16).map((a) => ({ id: a.id, weight: Number(a.weight.toFixed(3)) })) : []
     };
   }
 
@@ -1435,6 +1552,42 @@ class HippocampusDb {
           const cur = neighbors.get(nb.id);
           neighbors.set(nb.id, { b: nb, w: Math.max(cur?.w ?? 0, l.weight) });
         }
+      }
+    }
+    // v5.4 第二轮联想扩散：从第一轮邻居再扩散一次（联想链，权重 ×0.6 衰减）——
+    // 像人脑「想起 A → 想起 B → 顺带想起 C」的多跳联想，但随跳数衰减
+    if (neighbors.size > 0) {
+      const first = [...neighbors.values()].sort((a, b) => b.w - a.w).slice(0, 8);
+      const depth2 = new Map();
+      for (const nb of first) {
+        const row = this.db.prepare("SELECT * FROM branches WHERE uid=?").get(nb.b.id);
+        if (!row) continue;
+        const emb2 = this.embedFor(row.id);
+        if (emb2) {
+          const hits2 = this.db.prepare(
+            "SELECT rowid, distance FROM memories WHERE embedding MATCH ? ORDER BY distance LIMIT 6"
+          ).all(vecToBuffer(emb2));
+          for (const h of hits2) {
+            if (h.rowid === row.id) continue;
+            const b2 = byId.get(h.rowid);
+            if (!b2 || seedIds.has(b2.id) || neighbors.has(b2.id)) continue;
+            const sim2 = clamp(1 - (h.distance * h.distance) / 2, 0, 1);
+            const w2 = sim2 * 0.6 * nb.w;
+            const cur = depth2.get(b2.id);
+            depth2.set(b2.id, { b: b2, w: Math.max(cur?.w ?? 0, w2) });
+          }
+        }
+        for (const l of this.linksOf(nb.b.id)) {
+          const b2 = byId.get(l.other);
+          if (!b2 || seedIds.has(b2.id) || neighbors.has(b2.id)) continue;
+          const w2 = l.weight * 0.6 * nb.w;
+          const cur = depth2.get(b2.id);
+          depth2.set(b2.id, { b: b2, w: Math.max(cur?.w ?? 0, w2) });
+        }
+      }
+      for (const [id, v] of depth2) {
+        const cur = neighbors.get(id);
+        neighbors.set(id, cur ? { b: v.b, w: Math.max(cur.w, v.w) } : v);
       }
     }
     return [...neighbors.values()]
@@ -2125,13 +2278,19 @@ class HippocampusDb {
       lines.push("• [洞察] " + insight.title + " — " + String(insight.content).slice(0, len));
     }
     lines.push("〔统计: 活跃 " + stats.counts.active + " · 连接 " + stats.connections + " · 强度均 " + (stats.fitness || 0).toFixed(2) + " · epoch " + stats.epoch + " · 归档 " + stats.counts.archived + " · 库大小 " + Math.round(stats.sizeBytes / 1024) + "KB〕");
+    // v5.4：记忆包被调用 → 激活 top 锚点（保持工作记忆延续）+ 附带锚点列表
+    if (this.anchors) {
+      this.anchors.activate(top.slice(0, 8).map((t) => t.id), 0.4);
+      this.anchors.purge();
+    }
     return {
       scope: this.scope,
       projectPath: this.projectPath ?? null,
       text: lines.join("\n"),
       top,
       workstate: workstate ? this.sanitize(workstate) : null,
-      stats
+      stats,
+      anchors: this.anchors ? this.anchors.list(16).map((a) => ({ id: a.id, weight: Number(a.weight.toFixed(3)) })) : []
     };
   }
 
@@ -2163,7 +2322,13 @@ class HippocampusDb {
 
   stats() {
     const g = this.graphData();
-    return { counts: this.buildMeta().counts, meta: this.buildMeta(), graph: g };
+    // v5.4：统计响应附带当前激活锚点（前端金色锚环可视化）
+    return {
+      counts: this.buildMeta().counts,
+      meta: this.buildMeta(),
+      graph: g,
+      anchors: this.anchors ? this.anchors.list(24).map((a) => ({ id: a.id, weight: Number(a.weight.toFixed(3)) })) : []
+    };
   }
 
   sanitize(branch) {
@@ -2480,16 +2645,43 @@ class ActivityRegistry {
 class HippocampusDbFactory {
   constructor() {
     this.dbs = new Map();
+    // v5.4：激活锚点（工作记忆延续）—— 统一库单例共享，所有会话/项目共用一份工作记忆
+    this.anchors = new AnchorBank();
+    // v5.4：消息预检索缓存 —— 用户消息到达（agent/inbox/inserted）时异步检索，
+    // 系统提示组装（模型请求前）时读取注入：真正实现「先梳理检索、再决定输出」
+    this.recallCache = new Map(); // agentId -> { q, results, anchors, at }
   }
   getDb(scope, projectPath) {
     // scope/scopePath 仅为向后兼容，统一返回同一个记忆库
     const key = "unified";
     let db = this.dbs.get(key);
     if (!db) {
-      db = new HippocampusDb("global", null);
+      db = new HippocampusDb("global", null, this.anchors);
       this.dbs.set(key, db);
     }
     return db;
+  }
+  /** 记录一次消息预检索结果（按 agent 区分，仅保留最近一条） */
+  setRecall(agentId, entry) {
+    if (!entry || !Array.isArray(entry.results)) return;
+    this.recallCache.set(agentId ?? "__global__", entry);
+    // 容量保护：最多 16 个 agent，超出淘汰最旧
+    if (this.recallCache.size > 16) {
+      const oldest = this.recallCache.keys().next().value;
+      this.recallCache.delete(oldest);
+    }
+  }
+  /** 读取最近的预检索结果（maxAgeMs 内最新的一条；无则 null） */
+  peekRecall(maxAgeMs = 90000) {
+    let best = null;
+    const cut = now() - maxAgeMs;
+    for (const entry of this.recallCache.values()) {
+      if (entry.at >= cut && (!best || entry.at > best.at)) best = entry;
+    }
+    return best;
+  }
+  clearRecall() {
+    this.recallCache.clear();
   }
 }
 
@@ -2991,16 +3183,21 @@ function defineMemoryTools(service) {
         const { branch } = await viaService(service, "update", { id: args.id, patch: { title: args.title, content: args.content, kind: args.kind, tags: args.tags ?? [], strength: args.strength }, by: "agent", scope, scopePath, sessionId }, agent);
         return { ok: true, branch, message: "记忆已更新: " + branchSummary(branch) };
       }
-      const { branch, dedup, mergedInto } = await viaService(service, "create", { title: args.title, content: args.content, kind: args.kind, tags: args.tags ?? [], strength: args.strength, source: "agent", scope, scopePath, sessionId }, agent);
+      const created = await viaService(service, "create", { title: args.title, content: args.content, kind: args.kind, tags: args.tags ?? [], strength: args.strength, source: "agent", scope, scopePath, sessionId }, agent);
+      const { branch, dedup, mergedInto } = created;
+      const relatedList = Array.isArray(created.related) ? created.related : [];
       if (args.kind === "workstate" && !dedup) await viaService(service, "reportWork", { task: args.title, phase: "写入", progress: null, scope, scopePath }, agent).catch(() => {});
-      // v5.2：mergedInto 仅去重命中时输出（null 会被工具输出 schema 判为非 string）
+      // v5.4：mergedInto 仅去重命中时输出（null 会被工具输出 schema 判为非 string）
+      const relatedNote = relatedList.length
+        ? "\n相关记忆 " + relatedList.length + " 条（语义关联，未合并）: " + relatedList.map((r) => r.title + "(" + r.score + ")").join("、")
+        : "";
       const out = {
         ok: true,
         branch,
         dedup,
         message: dedup
           ? "检测到相似记忆（已合并强化原记忆，未重复入库）: " + branchSummary(branch)
-          : "记忆已写入: " + branchSummary(branch)
+          : "记忆已写入: " + branchSummary(branch) + relatedNote
       };
       if (dedup && mergedInto) out.mergedInto = mergedInto;
       return out;
@@ -3474,7 +3671,11 @@ function defineMemoryTools(service) {
 
 /**
  * 构建对话前注入的记忆包文本（同步、轻量，30s 缓存）：
- * 统一记忆库的关键记忆（强度×0.6+新鲜度×0.4）+ 最新工作状态 + 一句工具提示。
+ * v5.4 上下文感知注入 = ① 本条消息预检索结果（agent/inbox/inserted 异步检索缓存，
+ *   真正「先梳理检索再输出」—— 检索在模型输出消耗 token 之前完成）
+ *                    + ② 激活锚点（工作记忆延续）
+ *                    + ③ 核心记忆（强度×0.6+新鲜度×0.4，质量过滤）
+ *                    + ④ 最近 1h 新增记忆
  * 通过 ctx.systemPrompt.section 注册为动态 section，每轮 turn 前自动求值。
  */
 function registerPromptMemory(ctx, service, factory) {
@@ -3487,17 +3688,55 @@ function registerPromptMemory(ctx, service, factory) {
     let text = "";
     try {
       const udb = factory.getDb("unified");
-      // v5.2：minQuality 过滤低质量记忆（标题/内容残缺的不注入系统提示）
-      const pack = udb.contextPack({ topN: 8, maxLen: 130, minQuality: 0.5 });
-      udb.logInjection("auto", pack.top ?? [], pack.workstate?.id);
-      const lines = ["# 海马体记忆（对话前自动调取）", "以下是你的长期记忆（统一记忆库）中的关键内容，工作与回答时优先参考："];
-      if (pack.workstate) lines.push("▶ 当前工作状态：\n" + String(pack.workstate.content).slice(0, 260));
-      for (const t of pack.top) {
-        if (pack.workstate && t.id === pack.workstate.id) continue;
-        lines.push("• [" + (KIND_LABELS[t.kind] ?? t.kind) + "|" + t.strength.toFixed(2) + "] " + t.title + "：" + String(t.content).slice(0, 130));
+      // ① 本条消息预检索结果（90s 内新鲜）
+      const recall = factory.peekRecall(90000);
+      // ② 激活锚点（当前工作记忆）
+      const anchorList = factory.anchors ? factory.anchors.list(10) : [];
+      const anchorBranches = anchorList.map((a) => udb.getByUid(a.id)).filter(Boolean);
+      // ③ 核心记忆包（内部会激活 top8 锚点，维持连续性）
+      const pack = udb.contextPack({ topN: 6, maxLen: 130, minQuality: 0.5 });
+      // ④ 最近 1h 新增
+      let recentRows = [];
+      try {
+        recentRows = udb.db.prepare(
+          "SELECT * FROM branches WHERE status='active' AND created_at > ? ORDER BY created_at DESC LIMIT 4"
+        ).all(nowMs - 3600000).map((r) => udb.rowToBranch(r));
+      } catch { /* 查询失败忽略 */ }
+      // 融合去重：预检索 → 锚点 → 核心 → 最近新增，最多 14 条
+      const seen = new Set();
+      const pick = [];
+      const recallPick = [];
+      for (const r of recall?.results ?? []) {
+        if (!seen.has(r.id)) { seen.add(r.id); recallPick.push({ b: r, isRecall: true }); }
       }
-      lines.push("记忆工具：memory_write/memory_read/memory_search/memory_edit/memory_forget/memory_stats/memory_context/memory_evolve 可随时读写记忆；轨迹每小时自动喂养。");
+      for (const rb of recallPick) pick.push(rb);
+      for (const ab of anchorBranches) {
+        if (!seen.has(ab.id)) { seen.add(ab.id); pick.push({ b: ab, tag: "⚓" }); }
+      }
+      for (const t of pack.top) {
+        if (!seen.has(t.id)) { seen.add(t.id); pick.push({ b: t, tag: null }); }
+      }
+      for (const rb of recentRows) {
+        if (!seen.has(rb.id)) { seen.add(rb.id); pick.push({ b: rb, tag: "✦" }); }
+      }
+      const items = pick.slice(0, 14);
+      const lines = ["# 海马体记忆（对话前自动调取）", "以下是你的长期记忆（统一记忆库）中的关键内容，工作与回答时优先参考："];
+      if (recall && recall.results.length) {
+        lines.push("▍与您本条消息相关的记忆（已预先检索）:");
+        for (const r of recall.results.slice(0, 6)) {
+          lines.push("• [" + (KIND_LABELS[r.kind] ?? r.kind) + "|" + r.score + "] " + r.title + "：" + String(r.content).slice(0, 130));
+        }
+        lines.push("");
+      }
+      if (pack.workstate) lines.push("▶ 当前工作状态：\n" + String(pack.workstate.content).slice(0, 260));
+      for (const { b, tag, isRecall } of items) {
+        if (pack.workstate && b.id === pack.workstate.id) continue;
+        if (isRecall) continue; // 预检索结果已单独列出，避免重复
+        lines.push("• [" + (tag ? tag + " " : "") + (KIND_LABELS[b.kind] ?? b.kind) + "|" + b.strength.toFixed(2) + "] " + b.title + "：" + String(b.content).slice(0, 130));
+      }
+      lines.push("记忆工具：memory_write/read/search/edit/forget/stats/context/evolve/analyze/export/import/review 可随时读写记忆；⚓=工作记忆中激活，✦=最近新增；轨迹每小时自动喂养。");
       text = lines.join("\n");
+      udb.logInjection("auto", items.map((x) => x.b).concat(recallPick.map((x) => x.b)), pack.workstate?.id);
     } catch { text = ""; }
     promptCache.at = nowMs;
     promptCache.text = text;
@@ -3526,6 +3765,45 @@ export function apply(ctx) {
     try {
       registerPromptMemory(ctx, service, factory);
     } catch { /* 注入失败不影响插件 */ }
+  }
+
+  // v5.4 主动记忆梳理（人脑式「先检索再输出」）：
+  // 用户消息进入收件箱 → 立即异步检索相关记忆（语义+词法+联想+锚点加权）→
+  // 缓存结果；随后系统提示组装（模型请求前）时由 registerPromptMemory 读取注入。
+  // 检索发生在模型输出消耗 token 之前，且不阻塞消息处理（fire-and-forget + 超时兜底）。
+  if (process.env.DSH_HIPPOCAMPUS_PROMPT !== "0") {
+    try {
+      ctx.on("agent/inbox/inserted", (payload) => {
+        const agent = payload?.agent;
+        const message = payload?.message;
+        const text = messageTextOf(message);
+        if (!text || text.trim().length < 2) return;
+        const agentId = agent?.session?.id ?? null;
+        const cwd = agent?.session?.header?.cwd ?? null;
+        // 同一文本 30s 内不重复检索（防抖）
+        const prev = factory.recallCache.get(agentId);
+        if (prev && prev.q === text && now() - prev.at < 30000) return;
+        void (async () => {
+          try {
+            const db = factory.getDb("unified");
+            const q = text.trim().slice(0, 200);
+            const out = await db.searchBranches(q, 8, cwd);
+            factory.setRecall(agentId, {
+              q,
+              results: out.results.map((r) => ({
+                id: r.branch.id,
+                title: r.branch.title,
+                kind: r.branch.kind,
+                content: String(r.branch.content ?? "").slice(0, 160),
+                score: r.score
+              })),
+              anchors: out.anchors ?? [],
+              at: now()
+            });
+          } catch { /* 预检索失败不影响消息处理 */ }
+        })();
+      }, "hippocampus: recall");
+    } catch { /* 监听失败不影响插件 */ }
   }
 
   // v3.3：打开 DSH 即预加载记忆 —— 立即初始化统一库并预热图数据缓存
@@ -3588,4 +3866,4 @@ export function apply(ctx) {
 }
 
 // 供独立测试 / 编程使用
-export { HippocampusDb, HippocampusService, HippocampusDbFactory, ActivityRegistry, distillTrajectory };
+export { HippocampusDb, HippocampusService, HippocampusDbFactory, ActivityRegistry, AnchorBank, distillTrajectory };

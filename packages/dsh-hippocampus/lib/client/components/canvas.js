@@ -5,7 +5,7 @@ const { buildSim } = require("../sim.js");
 const { rotate3 } = require("../sim.js");
 const { draw } = require("../draw.js");
 
-function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus }) {
+function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus, anchors }) {
 	const canvasRef = useRef(null);
 	const wrapRef = useRef(null);
 	const simRef = useRef(null);
@@ -21,6 +21,10 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	useEffect(() => {
 		if (simRef.current) simRef.current.searchHits = searchHits;
 	}, [searchHits]);
+
+	// v5.4：激活锚点经 ref 传递（避免 rAF tick 依赖数组重建）
+	const anchorsRef = useRef(anchors);
+	useEffect(() => { anchorsRef.current = anchors; }, [anchors]);
 
 	const onWheel = (e) => {
 		e.preventDefault();
@@ -172,7 +176,7 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 				}
 				draw(canvasRef.current, sim, selectedId, sizeRef.current, searchQuery && searchQuery.trim() ? searchQuery.trim() : null, {
 					rotX: sim.rotX, rotY: sim.rotY, zoom: zoomRef.current, dragging: cam.dragging
-				});
+				}, anchorsRef.current);
 			}
 			raf = requestAnimationFrame(tick);
 		};
