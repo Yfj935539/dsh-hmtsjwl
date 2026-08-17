@@ -59,6 +59,39 @@ export const KIND_LABELS = {
   insight: "洞察",
   other: "其他"
 };
+/** 中文种类标签 → 种类 key（Markdown 导入用） */
+const KIND_BY_LABEL = {
+  偏好: "preference",
+  交流方式: "communication",
+  工作状态: "workstate",
+  洞察: "insight",
+  其他: "other"
+};
+/** 解析 Markdown 导出格式（## 标题 / _种类·标签·强度_ / 正文）为分支列表 */
+function parseMarkdownExport(text) {
+  const out = [];
+  let cur = null;
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const h = /^##\s+(.+)$/.exec(line);
+    if (h) {
+      if (cur) out.push(cur);
+      cur = { title: h[1].trim(), content: "", kind: "other", tags: [], strength: 0.6 };
+      continue;
+    }
+    const meta = /^_种类:\s*(.+?)\s*·\s*标签:\s*(.*?)\s*·\s*强度:\s*([\d.]+)/.exec(line);
+    if (meta && cur) {
+      cur.kind = KIND_BY_LABEL[meta[1].trim()] ?? "other";
+      cur.tags = meta[2].split(/[,，]/).map((t) => t.trim()).filter(Boolean);
+      cur.strength = clamp(Number(meta[3]) || 0.6, 0, 1);
+      continue;
+    }
+    if (cur && line.trim() && !/^---$/.test(line.trim())) {
+      cur.content += (cur.content ? "\n" : "") + line;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 
 const DAY_MS = 86400000;
 /** 每日遗忘系数：强度每天衰减到 0.995（艾宾浩斯式遗忘曲线） */
@@ -144,6 +177,8 @@ const QVEC_CACHE_MAX = 64;
 const META_CACHE_MS = 2000;
 /** 演化日志保留条数 */
 const EVOLOG_KEEP = 30;
+/** 注入日志保留条数（对话前自动 / 工具 / 界面刷新的留痕） */
+const INJECT_LOG_KEEP = 100;
 /** 自分析冗余扫描采样条数（按强度取 top N） */
 const ANALYZE_SAMPLE = 40;
 /** 喂养自动提炼工作状态（默认开；DSH_HIPPOCAMPUS_AUTO_STATE=0 关闭） */
@@ -382,10 +417,21 @@ function distillTrajectory(events, limit = FEED_TEXT_LIMIT) {
 
 let extractorPromise = null;
 let extractorOk = false;
+// v5.2 稳定性：模型加载失败冷却（毫秒）—— 失败风暴时避免每次调用都重试下载/加载
+let extractorFailAt = 0;
+const EXTRACTOR_FAIL_COOLDOWN_MS = 60000;
+/** 单次推理超时：超出视为失败降级词法（防模型卡死阻塞写/检索路径） */
+const EMBED_TIMEOUT_MS = 20000;
 
 async function getExtractor() {
   if (extractorOk && extractorPromise) return extractorPromise;
   if (extractorPromise) return extractorPromise;
+  // 失败冷却期内直接抛错（调用方降级词法），不重复加载
+  if (extractorFailAt && now() < extractorFailAt) {
+    const err = new Error("embedding 模型加载冷却中");
+    err.cooldown = true;
+    throw err;
+  }
   extractorPromise = (async () => {
     const { pipeline, env } = await import("@xenova/transformers");
     env.remoteHost = process.env.HF_ENDPOINT || "https://hf-mirror.com/";
@@ -396,21 +442,41 @@ async function getExtractor() {
   try {
     await extractorPromise;
     extractorOk = true;
+    extractorFailAt = 0;
   } catch (err) {
     extractorPromise = null;
+    extractorFailAt = now() + EXTRACTOR_FAIL_COOLDOWN_MS;
     throw err;
   }
   return extractorPromise;
 }
 
-/** 将文本编码为 512 维归一化向量（失败时返回 null，调用方回退词法） */
+// v5.2 并发队列：Transformers.js 单线程推理，多路并发嵌入会互相争抢甚至卡死。
+// 串行化 + 超时兜底，保证写/检索路径无论并发多少都稳定且有序。
+// 模型未就绪（首次下载/加载可能耗时）时快速降级，不阻塞写/检索主流程。
+let embedChain = Promise.resolve();
+const EMBED_READY = { ok: false };
+/**
+ * 将文本编码为 512 维归一化向量（失败/超时/模型未就绪返回 null，调用方回退词法）。
+ * 同一时刻只跑一次推理；排队任务按到达顺序执行。
+ */
 async function embedText(text) {
-  try {
-    const extractor = await getExtractor();
+  const run = async () => {
     const input = String(text ?? "").replace(/\s+/g, " ").slice(0, 4000);
-    const out = await extractor(input, { pooling: "mean", normalize: true });
+    if (!input) return null;
+    const extractor = await getExtractor();
+    const out = await Promise.race([
+      extractor(input, { pooling: "mean", normalize: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("embed 超时")), EMBED_TIMEOUT_MS))
+    ]);
     return Float32Array.from(out.data);
-  } catch (err) {
+  };
+  const p = embedChain.then(run, run);
+  // 链上吞错：单个失败不影响后续排队任务
+  embedChain = p.catch(() => null);
+  try {
+    return await p;
+  } catch {
     return null;
   }
 }
@@ -468,6 +534,9 @@ class HippocampusDb {
     this.s = new Map();
     this.metaCache = null;
     this.qvecCache = new LruCache(QVEC_CACHE_MAX);
+    // v5.2：活动分支快照缓存（检索热路径免重复全表扫描）+ 库大小缓存
+    this.activeCache = null;
+    this.sizeCache = { at: 0, bytes: 0 };
     this.initSchema();
     // v4：预编译语句预热需在 schema 就绪后进行，否则新库会报 no such table
     this.initStmts();
@@ -574,6 +643,17 @@ class HippocampusDb {
         nodes INTEGER NOT NULL DEFAULT 0,
         drift INTEGER NOT NULL DEFAULT 0
       );
+      -- v5：注入留痕（对话前自动 / 工具调取 / 界面刷新，供「注入日志」面板）
+      CREATE TABLE IF NOT EXISTS inject_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        mode TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        workstate INTEGER NOT NULL DEFAULT 0,
+        chars INTEGER NOT NULL DEFAULT 0,
+        title TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_inject_ts ON inject_log(ts);
       -- v4：查询索引（读取速率）
       CREATE INDEX IF NOT EXISTS idx_branches_status ON branches(status);
       CREATE INDEX IF NOT EXISTS idx_branches_kind ON branches(kind);
@@ -795,18 +875,28 @@ class HippocampusDb {
     return { vec, buf };
   }
 
-  /** 为全部活跃分支补充/刷新向量（写入时调用，幂等） */
+  /**
+   * 为全部活跃分支补充/刷新向量（写入时调用，幂等）。
+   * v5.2：只补缺失/全零向量的分支（embedFor 判定），已有有效向量的跳过；
+   * 每批之间让出事件循环（yield），避免长时间独占主线程拖慢对话/检索。
+   */
   async embedAll() {
     const rows = this.db.prepare(
       "SELECT b.id, b.title, b.content, b.tags FROM branches b WHERE b.status='active'"
     ).all();
-    for (const r of rows) {
+    let done = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (this.embedFor(r.id)) continue; // 已有有效向量（非全零）跳过
       try {
         const text = [r.title, safeJsonArray(r.tags, "[]").join(" "), r.content].filter(Boolean).join("。");
         const vec = await embedText(text);
-        if (vec) this.storeEmbedding(r.id, vec);
+        if (vec) { this.storeEmbedding(r.id, vec); done++; }
       } catch { /* 单条补嵌入失败不中断 */ }
+      // 每 4 条让出一次事件循环（模型推理本身异步，但解析/写库需要让位）
+      if ((i & 3) === 3) await new Promise((res) => setTimeout(res, 0));
     }
+    return { done, total: rows.length };
   }
 
   /** 写入/替换某分支的向量（delete + insert 幂等；v4 事务包裹防半写） */
@@ -828,6 +918,25 @@ class HippocampusDb {
       if (buf[i] !== 0) { zero = false; break; }
     }
     return zero ? null : buf;
+  }
+
+  // -------------------------------------------------------------------------
+  // v5.2：活动分支快照缓存 —— 检索/联想/去重/图 热路径共享一次全表扫描
+  // -------------------------------------------------------------------------
+
+  /** 活动分支快照（1s TTL；写操作经 invalidateActiveCache 失效） */
+  activeBranches() {
+    const nowMs = now();
+    if (this.activeCache && nowMs - this.activeCache.at < 1000) return this.activeCache.rows;
+    const rows = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    this.activeCache = { rows, at: nowMs };
+    return rows;
+  }
+
+  /** 写操作后调用：活动快照与图缓存一并失效 */
+  invalidateActiveCache() {
+    this.activeCache = null;
+    this.invalidateGraphCache();
   }
 
   // -------------------------------------------------------------------------
@@ -946,7 +1055,7 @@ class HippocampusDb {
     for (const c of cores) {
       this.setLink(id, c.uid, PERM_LINK_WEIGHT);
     }
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     return { id, name, path: workdirPath };
   }
 
@@ -965,7 +1074,7 @@ class HippocampusDb {
     this.db.prepare("UPDATE workdirs SET archived=1 WHERE path=?").run(workdirPath);
     this.unlinkAll(this.workdirId(workdirPath));
     this.setMeta("archivedWorkdirs", Number(this.getMeta("archivedWorkdirs", 0)) + 1);
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     return { archived: true, path: workdirPath };
   }
 
@@ -1012,11 +1121,30 @@ class HippocampusDb {
           this.db.prepare("SELECT history FROM branches WHERE uid=?").get(existing.id)?.history, "[]"
         );
         history.push({ at: ts, by: "agent", summary: "检测到相似记忆（相似度 " + top.s.toFixed(2) + "），自动合并强化" });
+        // v5.2 合并质量：新内容明显更详细（且不是原有内容的子串）时，把差异部分并入原记忆
+        // （限制总长，避免内容无限膨胀）—— 让去重合并不丢信息
+        const oldC = String(existing.content ?? "");
+        const newC = String(branch.content ?? "");
+        let mergedContent = oldC;
+        if (newC && newC.length > 40 && newC.length - oldC.length > 20 && oldC.length + newC.length <= 4000) {
+          if (!oldC.includes(newC.slice(0, 60))) {
+            const tail = newC.slice(oldC.includes(newC) ? newC.length : 0, newC.length);
+            const add = tail.trim();
+            if (add) mergedContent = oldC ? oldC + "\n" + add : add;
+          }
+        }
         this.db.prepare(
-          "UPDATE branches SET strength=?, last_access_at=?, updated_at=?, history=? WHERE uid=?"
+          "UPDATE branches SET strength=?, content=?, last_access_at=?, updated_at=?, history=? WHERE uid=?"
         ).run(
-          clamp(existing.strength + 0.06, 0, 1), ts, ts, JSON.stringify(history.slice(-HISTORY_LIMIT)), existing.id
+          clamp(existing.strength + 0.06, 0, 1), mergedContent, ts, ts,
+          JSON.stringify(history.slice(-HISTORY_LIMIT)), existing.id
         );
+        // 内容变了 → 重嵌入向量（保持语义检索命中最新内容）
+        if (mergedContent !== oldC) {
+          const nv = await embedText([existing.title, (existing.tags ?? []).join(" "), mergedContent].filter(Boolean).join("。"));
+          if (nv) this.storeEmbedding(existing.rowId, nv);
+        }
+        this.invalidateActiveCache();
         return { branch: this.getByUid(existing.id), dedup: true, mergedInto: existing.id };
       }
       // 建立突触：与新记忆最相似的 top3 连接（权重=相似度）
@@ -1032,7 +1160,7 @@ class HippocampusDb {
       branch.createdAt, branch.updatedAt, branch.lastAccessAt, JSON.stringify(branch.history)
     );
     if (vec) this.storeEmbedding(r.lastInsertRowid, vec);
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     // v3.2：节点上限检查（超过 1000 自动淘汰最弱）
     try { this.enforceNodeCap(); } catch { /* 淘汰失败不影响写入 */ }
     return { branch: this.getByUid(branch.uid), dedup: false, mergedInto: null };
@@ -1050,6 +1178,8 @@ class HippocampusDb {
     if (typeof patch.strength === "number") fields.strength = clamp(patch.strength, 0, 1);
     if (patch.status === "active" || patch.status === "archived") fields.status = patch.status;
     if (patch.source === "user" || patch.source === "agent") fields.source = patch.source;
+    // v5.2 稳定性：patch 全部无效时直接返回原分支（此前会生成空 SET 导致 SQL 崩溃）
+    if (Object.keys(fields).length === 0) return this.getByUid(uid);
     let history = safeJsonArray(row.history, "[]");
     history = [...history, { at: now(), by: by === "agent" ? "agent" : "user", summary: "修正: " + JSON.stringify(before) }].slice(-HISTORY_LIMIT);
     fields.updated_at = now();
@@ -1062,11 +1192,11 @@ class HippocampusDb {
       const vec = await embedText([upd.title, safeJsonArray(upd.tags, "[]").join(" "), upd.content].filter(Boolean).join("。"));
       if (vec) this.storeEmbedding(upd.id, vec);
     }
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     return this.getByUid(uid);
   }
 
-  /** 遗忘：归档（默认）或彻底删除 */
+  /** 遗忘：归档（默认）或彻底删除；v5.2：归档同样移除向量行（防孤儿向量堆积/检索索引膨胀） */
   removeBranch(uid, hard) {
     const row = this.db.prepare("SELECT * FROM branches WHERE uid=?").get(uid);
     if (!row) throw new Error("hippocampus.forget: 记忆不存在: " + uid);
@@ -1074,12 +1204,14 @@ class HippocampusDb {
       this.db.prepare("DELETE FROM memories WHERE rowid=?").run(BigInt(row.id));
       this.db.prepare("DELETE FROM branches WHERE id=?").run(row.id);
       this.unlinkAll(uid);
-      this.invalidateGraphCache();
+      this.invalidateActiveCache();
       return { removed: true, hard: true };
     }
     this.db.prepare("UPDATE branches SET status='archived', updated_at=? WHERE uid=?").run(now(), uid);
+    // 归档分支不再参与检索：删除其向量，避免 vec0 MATCH 索引携带不可命中数据
+    this.db.prepare("DELETE FROM memories WHERE rowid=?").run(BigInt(row.id));
     this.unlinkAll(uid);
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     return { removed: true, hard: false };
   }
 
@@ -1092,20 +1224,25 @@ class HippocampusDb {
     return this.rowToBranch(this.db.prepare("SELECT * FROM branches WHERE title=? AND status='active'").get(title));
   }
 
-  /** 记忆库文件总大小（db + wal + shm） */
+  /** 记忆库文件总大小（db + wal + shm；v5.2：10s 缓存，避免高频 statSync 磁盘 IO） */
   dbSizeBytes() {
+    const nowMs = now();
+    if (this.sizeCache && nowMs - this.sizeCache.at < 10000 && this.sizeCache.bytes > 0) {
+      return this.sizeCache.bytes;
+    }
     let total = 0;
     for (const f of [dbFile(this.scope, this.projectPath), dbFile(this.scope, this.projectPath) + "-wal", dbFile(this.scope, this.projectPath) + "-shm"]) {
       try { total += fs.statSync(f).size; } catch { /* 文件可能不存在 */ }
     }
+    this.sizeCache = { at: nowMs, bytes: total };
     return total;
   }
 
-  /** 与某向量最相似的活跃分支（排除自身可选） */
+  /** 与某向量最相似的活跃分支（排除自身可选）；v5.2 复用活动快照缓存 */
   async findSimilar(vec, opts = {}) {
     if (!vec) return [];
     const { limit = 3, excludeUid = null, minScore = 0.4 } = opts;
-    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    const active = this.activeBranches();
     const byId = new Map(active.map((b) => [b.rowId ?? b.id, b]));
     const hits = this.db.prepare(
       "SELECT rowid, distance FROM memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
@@ -1125,9 +1262,10 @@ class HippocampusDb {
 
   listBranches({ kind, q, includeArchived }) {
     const qTokens = tokensOf(q ?? "");
-    let rows = this.db.prepare(
-      "SELECT * FROM branches" + (includeArchived ? "" : " WHERE status='active'")
-    ).all().map((r) => this.rowToBranch(r));
+    // v5.2：复用活动快照（含归档时仍需全量查询）
+    let rows = includeArchived
+      ? this.db.prepare("SELECT * FROM branches").all().map((r) => this.rowToBranch(r))
+      : this.activeBranches();
     if (typeof kind === "string" && KINDS.includes(kind)) rows = rows.filter((b) => b.kind === kind);
     if (qTokens.length > 0) {
       rows = rows
@@ -1151,6 +1289,7 @@ class HippocampusDb {
     b.strength = clamp(b.strength + RECONSOLIDATE_BOOST, 0, 1);
     b.lastAccessAt = now();
     this.db.prepare("UPDATE branches SET strength=?, last_access_at=? WHERE uid=?").run(b.strength, b.lastAccessAt, uid);
+    this.invalidateActiveCache();
     return { branch: this.sanitize(b) };
   }
 
@@ -1159,7 +1298,8 @@ class HippocampusDb {
     if (typeof q !== "string" || !q.trim()) throw new Error("hippocampus.search: 缺少查询词 q");
     const n = typeof limit === "number" ? clamp(Math.floor(limit), 1, 50) : 8;
     const qTokens = tokensOf(q);
-    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    // v5.2：一次全表扫描的活动快照，词法/语义映射/联想扩散共享
+    const active = this.activeBranches();
 
     // 阶段 1：词法
     const lex = active
@@ -1215,7 +1355,7 @@ class HippocampusDb {
     // 阶段 3：联想扩散 —— 从 top5 沿相似图（向量 + 突触连接）取邻居
     if (fused.length > 0) {
       const seeds = fused.slice(0, 5);
-      const expanded = this.associateExpand(seeds, n, qv ? qv.vec : null);
+      const expanded = this.associateExpand(seeds, n, qv ? qv.vec : null, active);
       const seen = new Set(fused.map((x) => x.b.id));
       for (const e of expanded) {
         if (!seen.has(e.b.id)) {
@@ -1257,9 +1397,14 @@ class HippocampusDb {
     };
   }
 
-  /** 联想扩散：沿相似图（向量邻居 + 突触连接）从种子 BFS，返回补充结果 */
-  associateExpand(seeds, n, qvec) {
-    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+  /**
+   * 联想扩散：沿相似图（向量邻居 + 突触连接）从种子 BFS，返回补充结果。
+   * v5.2 修复：每个种子必须用【自身向量】找邻居（此前误用查询向量 qvec，
+   * 导致所有种子都取到查询的同一批最近邻，联想退化为重复召回）；
+   * active 快照由调用方传入（可选），避免同一检索多次全表扫描。
+   */
+  associateExpand(seeds, n, _qvec, activeRows) {
+    const active = Array.isArray(activeRows) ? activeRows : this.activeBranches();
     if (active.length <= 1) return [];
     const seedIds = new Set(seeds.map((x) => x.b.id));
     const neighbors = new Map();
@@ -1267,8 +1412,8 @@ class HippocampusDb {
     for (const s of seeds) {
       const row = this.db.prepare("SELECT * FROM branches WHERE uid=?").get(s.b.id);
       if (!row) continue;
-      // ① 向量邻居
-      const emb = qvec ?? this.embedFor(row.id);
+      // ① 向量邻居（始终用种子自身向量；qvec 仅作为检索质量参考不再复用）
+      const emb = this.embedFor(row.id);
       if (emb) {
         const hits = this.db.prepare(
           "SELECT rowid, distance FROM memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
@@ -1356,7 +1501,7 @@ class HippocampusDb {
     this.setMeta("lastEvolveAt", now());
     // v4 自循环进化留痕：evolog 演化日志
     this.appendEvolog({ merged, prunedLinks, fitnessBefore, fitnessAfter, lr: lrNext, drift, nodes: active2.length });
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     const g = this.graphData();
     return { ...g, merged, prunedLinks, fitnessAfter, lr: lrNext, drift };
   }
@@ -1479,11 +1624,19 @@ class HippocampusDb {
     this.db.prepare(
       "UPDATE branches SET content=?, strength=?, updated_at=?, history=?, last_access_at=? WHERE uid=?"
     ).run(nextContent, clamp(stronger.strength + 0.03, 0, 1), ts, JSON.stringify(history.slice(-HISTORY_LIMIT)), ts, stronger.id);
+    // v5.2：被合并分支归档即删向量；强者内容变化后后台重嵌入（保持语义检索命中合并内容）
+    const wRow = this.db.prepare("SELECT id FROM branches WHERE uid=?").get(weaker.id);
+    if (wRow) this.db.prepare("DELETE FROM memories WHERE rowid=?").run(BigInt(wRow.id));
     this.db.prepare("UPDATE branches SET status='archived', updated_at=? WHERE uid=?").run(ts, weaker.id);
     this.unlinkAll(weaker.id);
     this.setMeta("pruned", Number(this.getMeta("pruned", 0)) + 1);
     for (const l of this.linksOf(weaker.id)) {
       this.strengthenLink(stronger.id, l.other, l.weight * 0.6);
+    }
+    if (nextContent !== content) {
+      embedText([stronger.title, (stronger.tags ?? []).join(" "), nextContent].filter(Boolean).join("。"))
+        .then((nv) => { if (nv) this.storeEmbedding(stronger.rowId, nv); })
+        .catch(() => {});
     }
   }
 
@@ -1498,6 +1651,9 @@ class HippocampusDb {
     const tx = this.db.transaction((items) => {
       for (const r of items) {
         this.db.prepare("UPDATE branches SET status='archived', updated_at=? WHERE uid=?").run(ts, r.uid);
+        // 归档即移除向量（防孤儿向量堆积）
+        const idRow = this.db.prepare("SELECT id FROM branches WHERE uid=?").get(r.uid);
+        if (idRow) this.db.prepare("DELETE FROM memories WHERE rowid=?").run(BigInt(idRow.id));
         this.unlinkAll(r.uid);
       }
     });
@@ -1505,7 +1661,7 @@ class HippocampusDb {
     const prunedLinks = this.db.prepare("DELETE FROM links WHERE weight < ?").run(LINK_PRUNE_THRESHOLD).changes;
     this.setMeta("pruned", Number(this.getMeta("pruned", 0)) + n);
     this.setMeta("lastActivityAt", ts);
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     const g = this.graphData();
     return { ...g, pruned: n, prunedLinks };
   }
@@ -1570,8 +1726,10 @@ class HippocampusDb {
    * 提炼过期记忆精华：把超过 STALE_DAYS 的活跃记忆按摘要合并进一条
    * 「历史记忆精华」insight 分支（upsert），随后删除被提炼的过期记忆 ——
    * 「先提炼精炼重要信息喂养记忆，再删除过期无效记忆」。
+   * v5.2：改为 async 并 await 精华更新完成后再删除（此前 fire-and-forget
+   * 与删除并发，重嵌入向量可能晚于删除执行 → 产生孤儿向量）。
    */
-  distillStale() {
+  async distillStale() {
     const ts = now();
     const staleCut = ts - STALE_DAYS * DAY_MS;
     const rows = this.db.prepare("SELECT * FROM branches WHERE status='active'").all()
@@ -1586,9 +1744,9 @@ class HippocampusDb {
     const existing = this.findByTitle(title);
     if (existing) {
       const content = (String(existing.content ?? "") ? existing.content + "\n" : "") + summary;
-      this.updateBranch(existing.id, { content: content.slice(0, 8000), strength: clamp(existing.strength + 0.04, 0, 1) }, "system").catch(() => {});
+      try { await this.updateBranch(existing.id, { content: content.slice(0, 8000), strength: clamp(existing.strength + 0.04, 0, 1) }, "system"); } catch { /* 精华更新失败不阻断清理 */ }
     } else {
-      this.writeBranch({ title, content: summary.slice(0, 8000), kind: "insight", tags: ["精华", "自动", "过期归档"], source: "system" }).catch(() => {});
+      try { await this.writeBranch({ title, content: summary.slice(0, 8000), kind: "insight", tags: ["精华", "自动", "过期归档"], source: "system" }); } catch { /* 精华写入失败不阻断清理 */ }
     }
     let deleted = 0;
     for (const b of rows) {
@@ -1599,11 +1757,11 @@ class HippocampusDb {
   }
 
   /** 存储上限检查：超过 SIZE_LIMIT_BYTES 自动触发优化 */
-  checkSize() {
+  async checkSize() {
     const size = this.dbSizeBytes();
     this.setMeta("sizeBytes", size);
     if (size > SIZE_LIMIT_BYTES) {
-      return { ...this.optimizeForSize(), triggered: true };
+      return { ...(await this.optimizeForSize()), triggered: true };
     }
     return { ok: true, sizeBytes: size, optimized: false, triggered: false };
   }
@@ -1612,12 +1770,12 @@ class HippocampusDb {
    * 超限优化：① 提炼过期记忆精华（喂养）→ ② 清理过期/无效记忆 →
    * ③ 清除孤儿向量 → ④ checkpoint + VACUUM 压缩。
    */
-  optimizeForSize() {
+  async optimizeForSize() {
     const before = this.dbSizeBytes();
     let distilled = 0;
     let deleted = 0;
     try {
-      const d = this.distillStale();
+      const d = await this.distillStale();
       distilled = d.distilled ?? 0;
       deleted = (d.deleted ?? 0) + (d.distilled ?? 0);
     } catch { /* 提炼失败不阻断清理 */ }
@@ -1668,6 +1826,11 @@ class HippocampusDb {
       this.db.prepare(
         "UPDATE branches SET content=?, strength=?, updated_at=?, last_access_at=? WHERE uid=?"
       ).run(text, clamp(target.strength + 0.05, 0, 1), ts, ts, target.id);
+      // v5.2 修复：内容更新后重嵌入向量（否则语义检索永远命中旧内容）
+      try {
+        const vec = await embedText([target.title, (target.tags ?? []).join(" "), text].filter(Boolean).join("。"));
+        if (vec) this.storeEmbedding(target.rowId, vec);
+      } catch { /* 重嵌入失败保留旧向量（词法仍可命中） */ }
     } else {
       await this.writeBranch({
         title,
@@ -1685,7 +1848,7 @@ class HippocampusDb {
       try { await this.autoRefineWorkstate(events, sessionId, scopePath); } catch { /* 不阻断喂养主流程 */ }
     }
     this.setMeta("feedAt", ts);
-    this.invalidateGraphCache();
+    this.invalidateActiveCache();
     return { fed: events.length, wrote: true, title, chars: text.length };
   }
 
@@ -1702,9 +1865,9 @@ class HippocampusDb {
     if (!latest) return false;
     const content = messageTextOf(latest);
     if (!content || content.length < 4) return false;
-    const active = this.db.prepare("SELECT * FROM branches WHERE kind='workstate' AND status='active'").all().map((r) => this.rowToBranch(r));
+    const active = this.activeBranches().filter((b) => b.kind === "workstate");
     let target = null;
-    if (scopePath) target = active.find((b) => b.scopePath === scopePath) ?? null;
+    if (scopePath) target = active.filter((b) => b.scopePath === scopePath).sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
     if (!target) target = active.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
     const title = "工作状态";
     const ts = now();
@@ -1712,6 +1875,11 @@ class HippocampusDb {
       this.db.prepare(
         "UPDATE branches SET title=?, content=?, updated_at=?, last_access_at=? WHERE uid=?"
       ).run(title, content.slice(0, 400), ts, ts, target.id);
+      // v5.2 修复：workstate 内容更新后重嵌入向量（此前语义检索永远命中旧任务内容）
+      try {
+        const vec = await embedText([title, "状态", content.slice(0, 400)].filter(Boolean).join("。"));
+        if (vec) this.storeEmbedding(target.rowId, vec);
+      } catch { /* 重嵌入失败保留旧向量 */ }
     } else {
       await this.writeBranch({
         title,
@@ -1882,8 +2050,12 @@ class HippocampusDb {
     if (this.metaCache && now() - this.metaCache.at < META_CACHE_MS) return this.metaCache.data;
     const total = this.db.prepare("SELECT COUNT(*) AS c FROM branches").get().c;
     const active = this.db.prepare("SELECT COUNT(*) AS c FROM branches WHERE status='active'").get().c;
+    // v5.2：种类计数单条 GROUP BY（此前每个种类一次 COUNT 查询）
     const kinds = {};
-    for (const k of KINDS) kinds[k] = this.db.prepare("SELECT COUNT(*) AS c FROM branches WHERE kind=? AND status='active'").get(k).c;
+    for (const row of this.db.prepare(
+      "SELECT kind, COUNT(*) AS c FROM branches WHERE status='active' GROUP BY kind"
+    ).all()) kinds[row.kind] = row.c;
+    for (const k of KINDS) if (!(k in kinds)) kinds[k] = 0;
     const links = this.db.prepare("SELECT COUNT(*) AS c FROM links WHERE weight >= ?").get(LINK_PRUNE_THRESHOLD).c;
     const data = {
       epoch: Number(this.getMeta("epoch", 1)),
@@ -1921,17 +2093,20 @@ class HippocampusDb {
    * v3：项目记忆包 —— 长会话中刷新上下文锚点，缓解上下文污染。
    * 返回当前作用域浓缩记忆：按 强度×0.6 + 新鲜度×0.4 排序的 topN、
    * 最新工作状态、最新洞察、以及记忆库健康统计。
+   * v5.2：复用活动快照；minQuality 过滤低质量记忆（对话前注入默认 0.5，
+   * 避免把标题残缺/内容过短的记忆注入系统提示浪费 token）。
    */
-  contextPack({ topN = 12, maxLen = 200 } = {}) {
+  contextPack({ topN = 12, maxLen = 200, minQuality = 0 } = {}) {
     const ts = now();
     const n = clamp(Math.floor(topN ?? 12), 3, 30);
     const len = clamp(Math.floor(maxLen ?? 200), 60, 800);
-    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    const active = this.activeBranches();
     const scored = active.map((b) => {
       const ageDays = Math.max(0, (ts - (b.updatedAt || ts)) / DAY_MS);
       const recency = Math.max(0, 1 - ageDays / 30);
-      return { b, s: b.strength * 0.6 + recency * 0.4 };
-    }).sort((x, y) => y.s - x.s);
+      const q = minQuality > 0 ? this.computeQuality(b) : 1;
+      return { b, s: (b.strength * 0.6 + recency * 0.4) * (q >= minQuality ? 1 : 0) };
+    }).filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
     const top = scored.slice(0, n).map(({ b, s }) => {
       const c = String(b.content ?? "");
       return { ...this.sanitize(b), content: c.length > len ? c.slice(0, len) + "…" : c, packScore: Number(s.toFixed(3)) };
@@ -1965,7 +2140,7 @@ class HippocampusDb {
     if (typeof sessionId === "string") this.setMeta("lastSessionId", sessionId);
     if (typeof task === "string") this.setMeta("lastTask", task.slice(0, 300));
     const qTokens = tokensOf("工作状态");
-    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    const active = this.activeBranches();
     let ws = active.filter((b) => b.kind === "workstate").sort((a, b) => scoreQuery(b, qTokens) - scoreQuery(a, qTokens))[0];
     const ts = now();
     const content = [
@@ -1992,7 +2167,254 @@ class HippocampusDb {
   }
 
   sanitize(branch) {
-    return { ...branch, history: (branch.history ?? []).slice(-10) };
+    const q = this.computeQuality(branch);
+    return { ...branch, quality: q, history: (branch.history ?? []).slice(-10) };
+  }
+
+  /** 质量评分 0..1：完整性（内容长度/标题/标签）+ 清晰度 + 时效修正 */
+  computeQuality(branch) {
+    if (!branch) return 0;
+    let s = 0.5;
+    // 标题 ≥ 3 字 +1 分；≥ 8 字 +2 分
+    const tl = (branch.title ?? "").length;
+    if (tl >= 3) s += 0.1;
+    if (tl >= 8) s += 0.1;
+    // 内容够长
+    const cl = (branch.content ?? "").length;
+    if (cl >= 20) s += 0.1;
+    if (cl >= 80) s += 0.2;
+    // 有标签
+    const tags = Array.isArray(branch.tags) ? branch.tags : [];
+    if (tags.length >= 1) s += 0.1;
+    if (tags.length >= 3) s += 0.1;
+    // 有时间信息
+    if (branch.updatedAt && branch.createdAt) s += 0.1;
+    // 新鲜度降权（>60 天）
+    if (branch.updatedAt && (now() - branch.updatedAt) > 60 * DAY_MS) s -= 0.1;
+    return clamp(s, 0, 1);
+  }
+
+  /** 所有标签及其使用计数（全局统计，用于标签云和合并） */
+  tags() {
+    const rows = this.db.prepare("SELECT tags FROM branches WHERE status='active' OR status='archived'").all();
+    const map = new Map();
+    for (const r of rows) {
+      for (const t of safeJsonArray(r.tags, "[]")) {
+        map.set(t, (map.get(t) ?? 0) + 1);
+      }
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([tag, count]) => ({ tag, count }));
+  }
+
+  /** 合并/重命名标签：旧标签替换为新标签 */
+  tagRename(oldTag, newTag) {
+    if (!oldTag || !newTag) return { renamed: 0 };
+    const rows = this.db.prepare("SELECT id, tags FROM branches WHERE status='active' OR status='archived'").all();
+    let cnt = 0;
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        let tags = safeJsonArray(r.tags, "[]");
+        const idx = tags.indexOf(oldTag);
+        if (idx === -1) continue;
+        tags[idx] = newTag;
+        this.db.prepare("UPDATE branches SET tags=?, updated_at=? WHERE id=?").run(JSON.stringify(tags), now(), r.id);
+        cnt++;
+      }
+    });
+    tx();
+    return { renamed: cnt, from: oldTag, to: newTag };
+  }
+
+  /** 导出所有记忆为 Markdown（含元数据） */
+  exportAll() {
+    const rows = this.db.prepare("SELECT * FROM branches WHERE status='active' ORDER BY updated_at DESC").all()
+      .map((r) => this.rowToBranch(r));
+    const lines = ["# 海马体记忆导出", "导出时间: " + new Date().toISOString(), "条目数: " + rows.length, "---"];
+    for (const b of rows) {
+      lines.push("## " + b.title);
+      lines.push("_种类: " + (KIND_LABELS[b.kind] ?? b.kind) + " · 标签: " + (b.tags ?? []).join(", ") + " · 强度: " + (b.strength ?? 0.6).toFixed(2) + "_");
+      lines.push("");
+      lines.push(b.content);
+      lines.push("---");
+    }
+    return lines.join("\n");
+  }
+
+  /**
+   * 从 Markdown 导入记忆（带去重合并）。
+   * v5.2：限量 300 条 + 每 5 条让出事件循环，防止大文件导入长时间阻塞主线程。
+   */
+  async importAll(text) {
+    const items = parseMarkdownExport(text).slice(0, 300);
+    let imported = 0, dedup = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      try {
+        const out = await this.writeBranch({ ...item, source: "user" });
+        if (out.dedup) dedup++; else imported++;
+      } catch { /* 单条失败不中断导入 */ }
+      if ((i & 4) === 4) await new Promise((res) => setTimeout(res, 0));
+    }
+    return { imported, dedup, total: items.length, truncated: items.length < parseMarkdownExport(text).length };
+  }
+
+  // -------------------------------------------------------------------------
+  // v5：间隔重复复习调度（P5）—— 到期记忆优先召回 + 待复习提醒
+  // -------------------------------------------------------------------------
+
+  /** 间隔重复：强度越高，复习间隔越长（艾宾浩斯曲线，1~28 天） */
+  reviewIntervalDays(strength) {
+    return clamp(Math.round(1 + strength * 27), 1, 28);
+  }
+
+  /** 到期复习时间戳（纯函数，无需落库：由强度 + 最近访问时间推出） */
+  reviewDueAt(branch) {
+    const base = branch.lastAccessAt || branch.updatedAt || branch.createdAt || now();
+    return base + this.reviewIntervalDays(branch.strength) * DAY_MS;
+  }
+
+  /** 待复习记忆列表（按到期先后排序） */
+  reviewDue(limit = 50) {
+    const ts = now();
+    const rows = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    const due = rows
+      .map((b) => ({ b, at: this.reviewDueAt(b) }))
+      .filter((x) => x.at <= ts)
+      .sort((a, b) => a.at - b.at)
+      .slice(0, clamp(limit, 1, 200))
+      .map((x) => this.sanitize(x.b));
+    return { due: due.length, branches: due };
+  }
+
+  /** 复习一条记忆：再巩固强化 + 刷新复习期 */
+  review(uid) {
+    const b = this.getByUid(uid);
+    if (!b) throw new Error("hippocampus.review: 记忆不存在: " + uid);
+    const ts = now();
+    const boost = clamp(RECONSOLIDATE_BOOST * (1 + this.learningRate()), 0.03, 0.12);
+    const ns = clamp(b.strength + boost, 0, 1);
+    const history = safeJsonArray(this.db.prepare("SELECT history FROM branches WHERE uid=?").get(uid)?.history, "[]");
+    history.push({ at: ts, by: "user", summary: "复习强化（间隔重复）" });
+    this.db.prepare("UPDATE branches SET strength=?, last_access_at=?, updated_at=?, history=? WHERE uid=?").run(
+      ns, ts, ts, JSON.stringify(history.slice(-HISTORY_LIMIT)), uid
+    );
+    this.invalidateActiveCache();
+    return this.sanitize(this.getByUid(uid));
+  }
+
+  /** 记忆时间线：创建 / 修正历史 / 归档 / 演化事件合并，按时间倒序 */
+  timeline(limit = 80) {
+    const rows = this.db.prepare("SELECT * FROM branches").all().map((r) => this.rowToBranch(r));
+    const events = [];
+    for (const b of rows) {
+      events.push({ ts: b.createdAt, type: "created", id: b.id, title: b.title, kind: b.kind, status: b.status, detail: "创建记忆" });
+      for (const h of b.history ?? []) {
+        events.push({ ts: h.at, type: "history", id: b.id, title: b.title, kind: b.kind, by: h.by, detail: String(h.summary ?? "").slice(0, 90) });
+      }
+      if (b.status === "archived") {
+        events.push({ ts: b.updatedAt, type: "archived", id: b.id, title: b.title, detail: "归档记忆" });
+      }
+    }
+    try {
+      const evo = this.db.prepare("SELECT * FROM evolog ORDER BY ts DESC LIMIT 40").all();
+      for (const e of evo) {
+        events.push({
+          ts: e.ts, type: "evolve", id: "evo:" + e.id, title: "演化 · epoch " + e.epoch,
+          detail: "合并 " + e.merged + " · 修剪连接 " + e.pruned_links + " · fitness " + Number(e.fitness_after || 0).toFixed(3)
+        });
+      }
+    } catch { /* evolog 缺失忽略 */ }
+    events.sort((a, b) => b.ts - a.ts);
+    return events.slice(0, clamp(limit, 10, 300));
+  }
+
+  // -------------------------------------------------------------------------
+  // v5.1：注入留痕（F9 注入日志面板的数据源）
+  //   - 对话前自动注入（registerPromptMemory，每轮 turn 前）
+  //   - 工具调取（memory_context）
+  //   - 界面刷新（记忆页「刷新」/ projectPath 后台刷新）
+  // -------------------------------------------------------------------------
+
+  /** 记录一次记忆注入（mode: auto / tool / refresh） */
+  logInjection(mode, branches, workstateId) {
+    try {
+      const active = Array.isArray(branches) ? branches.filter(Boolean) : [];
+      const workstate = active.some((b) => b && workstateId && b.id === workstateId);
+      const chars = active.reduce((s, b) => s + (b.content ? String(b.content).length : 0) + (b.title ? String(b.title).length : 0), 0);
+      this.db.prepare(
+        "INSERT INTO inject_log(ts, mode, count, workstate, chars, title) VALUES(?,?,?,?,?,?)"
+      ).run(
+        now(), String(mode || "auto"), active.length, workstate ? 1 : 0, chars,
+        active.slice(0, 6).map((b) => String(b.title ?? "").slice(0, 24)).join(" | ")
+      );
+      this.db.prepare(
+        "DELETE FROM inject_log WHERE id NOT IN (SELECT id FROM inject_log ORDER BY id DESC LIMIT ?)"
+      ).run(INJECT_LOG_KEEP);
+    } catch { /* 注入留痕失败不影响主流程 */ }
+  }
+
+  /** 读取注入日志（倒序） */
+  injectLog(limit = 60) {
+    try {
+      const rows = this.db.prepare("SELECT * FROM inject_log ORDER BY id DESC LIMIT ?").all(clamp(limit, 1, 300));
+      return rows.map((r) => ({
+        id: r.id, ts: r.ts, mode: r.mode, count: r.count,
+        workstate: !!r.workstate, chars: r.chars, title: r.title
+      }));
+    } catch { return []; }
+  }
+
+  // -------------------------------------------------------------------------
+  // v5.1：突触手动编辑（F5 —— 在两个记忆之间显式连接 / 断开）
+  // -------------------------------------------------------------------------
+
+  /** 手动连接突触：显式建立/加强两记忆间的连接（取更大权重） */
+  linkManual(uidA, uidB, weight) {
+    const a = this.getByUid(uidA);
+    const b = this.getByUid(uidB);
+    if (!a || !b) throw new Error("hippocampus.linkManual: 记忆不存在");
+    if (uidA === uidB) throw new Error("hippocampus.linkManual: 不能连接记忆自身");
+    const w = clamp(typeof weight === "number" ? weight : 0.6, 0.05, 1);
+    this.setLink(uidA, uidB, w);
+    const ts = now();
+    for (const target of [a, b]) {
+      const row = this.db.prepare("SELECT history FROM branches WHERE uid=?").get(target.id);
+      const history = safeJsonArray(row?.history, "[]");
+      history.push({ at: ts, by: "user", summary: "手动连接突触 → " + (target.id === a.id ? b.title : a.title) + "（权重 " + w.toFixed(2) + "）" });
+      this.db.prepare("UPDATE branches SET history=?, updated_at=? WHERE uid=?").run(
+        JSON.stringify(history.slice(-HISTORY_LIMIT)), ts, target.id
+      );
+    }
+    this.invalidateActiveCache();
+    return { linked: true, a: uidA, b: uidB, weight: w };
+  }
+
+  /** 手动断开突触：删除两记忆间的连接 */
+  unlinkManual(uidA, uidB) {
+    if (!uidA || !uidB || uidA === uidB) throw new Error("hippocampus.unlinkManual: 参数不合法");
+    const [x, y] = this.linkKey(uidA, uidB);
+    const existed = this.db.prepare("SELECT weight FROM links WHERE a=? AND b=?").get(x, y);
+    if (!existed) return { unlinked: false, a: uidA, b: uidB, reason: "两记忆间无连接" };
+    this.db.prepare("DELETE FROM links WHERE a=? AND b=?").run(x, y);
+    this.invalidateActiveCache();
+    return { unlinked: true, a: uidA, b: uidB, removedWeight: existed.weight };
+  }
+
+  // -------------------------------------------------------------------------
+  // v5.1：演化日志查看（F6 —— 合并/修剪/代际的留痕）
+  // -------------------------------------------------------------------------
+
+  /** 演化日志列表（倒序） */
+  evologList(limit = 40) {
+    try {
+      const rows = this.db.prepare("SELECT * FROM evolog ORDER BY id DESC LIMIT ?").all(clamp(limit, 1, 200));
+      return rows.map((r) => ({
+        id: r.id, ts: r.ts, epoch: r.epoch, generation: r.generation,
+        merged: r.merged, prunedLinks: r.pruned_links,
+        fitnessBefore: r.fitness_before, fitnessAfter: r.fitness_after,
+        lr: r.lr, addedSince: r.added_since, nodes: r.nodes, drift: r.drift
+      }));
+    } catch { return []; }
   }
 
   close() {
@@ -2199,10 +2621,13 @@ class HippocampusService extends TypertRemoteService {
     return { evolved: true, merged: g.merged, prunedLinks: g.prunedLinks, fitnessAfter: g.fitnessAfter, lr: g.lr };
   }
 
-  /** 项目记忆包（上下文刷新用） */
+  /** 项目记忆包（上下文刷新用；调用即留痕到注入日志） */
   async context(request) {
     const { topN, maxLen } = isPlainObject(request) ? request : {};
-    return this.dbOf(request).contextPack({ topN, maxLen });
+    const db = this.dbOf(request);
+    const pack = db.contextPack({ topN, maxLen });
+    db.logInjection("refresh", pack.top ?? [], pack.workstate?.id);
+    return pack;
   }
 
   /**
@@ -2275,10 +2700,13 @@ class HippocampusService extends TypertRemoteService {
         }
       } catch { /* 单会话读取失败不影响其他 */ }
     }
+    // v5.2：事件上限保护 —— 超长会话只取最近 500 条（避免上万事件拖慢喂养/提炼）
     events.sort((a, b) => a.time - b.time);
-    const out = db.feedTrajectory(events, ids[0] ?? null, scopePath ?? null);
+    const keep = events.slice(-500);
+    const out = db.feedTrajectory(keep, ids[0] ?? null, scopePath ?? null);
+    out.fedAll = events.length;
     try { out.purged = db.purgeStale(); } catch { /* 清理失败不阻断 */ }
-    try { out.size = db.checkSize(); } catch { /* 检查失败不阻断 */ }
+    try { out.size = await db.checkSize(); } catch { /* 检查失败不阻断 */ }
     return { ok: true, ...out };
   }
 
@@ -2291,6 +2719,91 @@ class HippocampusService extends TypertRemoteService {
   async archiveWorkdir(request) {
     const { path } = isPlainObject(request) ? request : {};
     return this.dbOf(request).archiveWorkdir(path);
+  }
+
+  /** 标签云：全部标签及使用计数 */
+  async tags(request) {
+    return this.dbOf(request).tags();
+  }
+
+  /** 合并/重命名标签 */
+  async tagRename(request) {
+    const { from, to } = isPlainObject(request) ? request : {};
+    return this.dbOf(request).tagRename(from, to);
+  }
+
+  /** 导出记忆（Markdown 文本） */
+  async exportAll(request) {
+    return { text: this.dbOf(request).exportAll() };
+  }
+
+  /** 从 Markdown 导入记忆（带去重合并） */
+  async importAll(request) {
+    const { text } = isPlainObject(request) ? request : {};
+    if (typeof text !== "string" || !text.trim()) throw new Error("hippocampus.importAll: 缺少导入内容");
+    return this.dbOf(request).importAll(text);
+  }
+
+  /** 待复习记忆列表 */
+  async reviewDue(request) {
+    const { limit } = isPlainObject(request) ? request : {};
+    return this.dbOf(request).reviewDue(limit);
+  }
+
+  /** 复习一条记忆（再巩固强化） */
+  async review(request) {
+    const { id } = isPlainObject(request) ? request : {};
+    if (typeof id !== "string" || !id) throw new Error("hippocampus.review: 缺少记忆 id");
+    return this.dbOf(request).review(id);
+  }
+
+  /** 记忆时间线 */
+  async timeline(request) {
+    const { limit } = isPlainObject(request) ? request : {};
+    return { events: this.dbOf(request).timeline(limit) };
+  }
+
+  /** 某记忆的全部突触连接（手动连线面板展示已有连接） */
+  async linksOf(request) {
+    const { id } = isPlainObject(request) ? request : {};
+    if (typeof id !== "string" || !id) throw new Error("hippocampus.linksOf: 缺少记忆 id");
+    const links = this.dbOf(request).linksOf(id);
+    const db = this.dbOf(request);
+    const withTitle = links.map((l) => {
+      const b = db.getByUid(l.other);
+      return { other: l.other, weight: l.weight, title: b ? b.title : l.other, kind: b ? b.kind : null };
+    });
+    return { links: withTitle };
+  }
+
+  /** 手动连接突触（两个记忆之间显式建立连接） */
+  async linkManual(request) {
+    const { a, b, weight } = isPlainObject(request) ? request : {};
+    if (typeof a !== "string" || !a || typeof b !== "string" || !b) {
+      throw new Error("hippocampus.linkManual: 需要两个记忆 id");
+    }
+    return this.dbOf(request).linkManual(a, b, weight);
+  }
+
+  /** 手动断开突触（删除两个记忆间的连接） */
+  async unlinkManual(request) {
+    const { a, b } = isPlainObject(request) ? request : {};
+    if (typeof a !== "string" || !a || typeof b !== "string" || !b) {
+      throw new Error("hippocampus.unlinkManual: 需要两个记忆 id");
+    }
+    return this.dbOf(request).unlinkManual(a, b);
+  }
+
+  /** 演化日志（合并/修剪/代际留痕） */
+  async evolog(request) {
+    const { limit } = isPlainObject(request) ? request : {};
+    return { events: this.dbOf(request).evologList(limit) };
+  }
+
+  /** 注入日志（对话前自动/工具/界面刷新的留痕） */
+  async injectLog(request) {
+    const { limit } = isPlainObject(request) ? request : {};
+    return { events: this.dbOf(request).injectLog(limit) };
   }
 }
 
@@ -2339,7 +2852,19 @@ applyRemoteDecorators(HippocampusService, {
   feed: "feed",
   optimize: "optimize",
   resolveProject: "resolveProject",
-  archiveWorkdir: "archiveWorkdir"
+  archiveWorkdir: "archiveWorkdir",
+  tags: "tags",
+  tagRename: "tagRename",
+  exportAll: "exportAll",
+  importAll: "importAll",
+  reviewDue: "reviewDue",
+  review: "review",
+  timeline: "timeline",
+  linksOf: "linksOf",
+  linkManual: "linkManual",
+  unlinkManual: "unlinkManual",
+  evolog: "evolog",
+  injectLog: "injectLog"
 });
 
 // ---------------------------------------------------------------------------
@@ -2825,6 +3350,115 @@ function defineMemoryTools(service) {
     }
   }));
 
+  // v5：记忆导入导出（Markdown）
+  tools.push(defineTool({
+    name: "memory_export",
+    description: "导出海马体记忆库全部活跃记忆为 Markdown 文本（标题 + 种类/标签/强度元数据 + 正文）。用于备份、迁移到其它设备/项目、或交给用户存档。只读操作，不修改记忆。",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          text: { type: "string", required: true },
+          message: { type: "string", required: true }
+        }
+      },
+      render: (_args, value) => [{
+        type: "text",
+        text: value.message + "\n\n" + value.text
+      }]
+    },
+    execute: async (args, exec) => {
+      const agent = exec.agent ?? null;
+      const { scope, scopePath } = (() => {
+        const r = dbForScope(service, args.scope, agent);
+        return { scope: r.scope, scopePath: r.scopePath };
+      })();
+      const { text } = await viaService(service, "exportAll", { scope, scopePath }, agent);
+      const count = (text.match(/^##\s/gm) ?? []).length;
+      return { text, message: "已导出 " + count + " 条记忆（Markdown）" };
+    }
+  }));
+
+  tools.push(defineTool({
+    name: "memory_import",
+    description: "从 Markdown 文本导入记忆到海马体记忆库。接受 memory_export 的导出格式（## 标题 + _种类/标签/强度_ + 正文），或任何遵循该结构的记忆列表。导入会按相似度自动去重合并（≥0.9 同种类合并强化原记忆）。用于从备份/其它设备恢复记忆。",
+    parameters: {
+      text: { type: "string", required: true, description: "Markdown 格式的记忆内容（memory_export 的输出格式）" },
+      scope: scopeParam()
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          imported: { type: "number", required: true },
+          dedup: { type: "number", required: true },
+          total: { type: "number", required: true },
+          message: { type: "string", required: true }
+        }
+      },
+      render: (_args, value) => [{
+        type: "text",
+        text: value.message
+      }]
+    },
+    execute: async (args, exec) => {
+      const agent = exec.agent ?? null;
+      const { scope, scopePath } = (() => {
+        const r = dbForScope(service, args.scope, agent);
+        return { scope: r.scope, scopePath: r.scopePath };
+      })();
+      const out = await viaService(service, "importAll", { text: args.text, scope, scopePath }, agent);
+      return { ...out, message: "导入完成：新增 " + out.imported + " 条，去重合并 " + out.dedup + " 条（共 " + out.total + " 条）" };
+    }
+  }));
+
+  // v5：复习调度（间隔重复）
+  tools.push(defineTool({
+    name: "memory_review",
+    description: "复习海马体记忆库中的记忆（间隔重复调度）。不传 id 时列出所有到期待复习的记忆（按到期先后），传 id 时对指定记忆执行复习强化（提升强度、刷新复习期）。长期记忆需要定期复习才能对抗遗忘曲线；适合在会话开始时或用户要求时执行。",
+    parameters: {
+      id: { type: "string", description: "要复习的记忆 id；留空则仅列出到期待复习列表" },
+      review: { type: "boolean", description: "true 时对 id 指定的记忆执行复习强化（默认 false 仅列出）" },
+      scope: scopeParam()
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          due: { type: "number", required: true },
+          branches: { type: "array", items: BRANCH_OUT },
+          reviewed: { type: "object", additionalProperties: true },
+          message: { type: "string", required: true }
+        }
+      },
+      render: (_args, value) => [{
+        type: "text",
+        text: value.message
+      }]
+    },
+    execute: async (args, exec) => {
+      const agent = exec.agent ?? null;
+      const { scope, scopePath } = (() => {
+        const r = dbForScope(service, args.scope, agent);
+        return { scope: r.scope, scopePath: r.scopePath };
+      })();
+      if (args.id && args.review === true) {
+        const reviewed = await viaService(service, "review", { id: args.id, scope, scopePath }, agent);
+        return { due: 0, reviewed, message: "已复习并强化: " + branchSummary(reviewed) + "（强度 " + reviewed.strength.toFixed(2) + "）" };
+      }
+      const { due, branches } = await viaService(service, "reviewDue", { scope, scopePath }, agent);
+      const lines = ["到期待复习记忆 " + due + " 条" + (due === 0 ? "（暂无到期记忆，记忆状态良好）" : "：")];
+      for (const b of branches.slice(0, 20)) {
+        lines.push("• " + b.id + " | " + b.title + "（强度 " + b.strength.toFixed(2) + "）");
+      }
+      return { due, branches, message: lines.join("\n") + (due > 0 ? "\n对指定 id 传 review=true 可执行复习强化。" : "") };
+    }
+  }));
+
   return tools;
 }
 
@@ -2851,7 +3485,9 @@ function registerPromptMemory(ctx, service, factory) {
     let text = "";
     try {
       const udb = factory.getDb("unified");
-      const pack = udb.contextPack({ topN: 8, maxLen: 130 });
+      // v5.2：minQuality 过滤低质量记忆（标题/内容残缺的不注入系统提示）
+      const pack = udb.contextPack({ topN: 8, maxLen: 130, minQuality: 0.5 });
+      udb.logInjection("auto", pack.top ?? [], pack.workstate?.id);
       const lines = ["# 海马体记忆（对话前自动调取）", "以下是你的长期记忆（统一记忆库）中的关键内容，工作与回答时优先参考："];
       if (pack.workstate) lines.push("▶ 当前工作状态：\n" + String(pack.workstate.content).slice(0, 260));
       for (const t of pack.top) {
@@ -2901,7 +3537,8 @@ export function apply(ctx) {
   // v3.1：每小时自动「轨迹喂养」—— 读取活跃会话的最近轨迹事件（v3.2 统一库：
   // 所有工作区目录的会话都喂进同一记忆库），随后过期清理 + 存储上限检查 +
   // 节点上限淘汰（超 1000 自动淘汰最弱）
-  setInterval(() => {
+  // v5.2：定时器句柄保存，dispose 时清理 —— 防止插件重载/更新后旧定时器残留双跑
+  const feedTimer = setInterval(() => {
     void (async () => {
       try {
         const allIds = [...new Set(registry.recentProjects().flatMap((p) => p.sessionIds))];
@@ -2912,7 +3549,7 @@ export function apply(ctx) {
       try {
         const udb = factory.getDb("unified");
         udb.purgeStale();
-        udb.checkSize();
+        await udb.checkSize();
         udb.enforceNodeCap();
       } catch { /* 清理失败忽略 */ }
       // v4 自循环进化演练：喂养/清理后按周期做一次演练分析，门控通过才真实演化
@@ -2927,7 +3564,7 @@ export function apply(ctx) {
 
   // v3.1 启动自检：DSH 启动后 5 秒自动执行一次增量喂养（启动即绑定记忆轨迹），
   // 并后台预热语义编码模型（避免首次检索/喂养卡顿）
-  setTimeout(() => {
+  const bootTimer = setTimeout(() => {
     void (async () => {
       try {
         const allIds = [...new Set(registry.recentProjects().flatMap((p) => p.sessionIds))];
@@ -2940,6 +3577,10 @@ export function apply(ctx) {
   }, 5000);
 
   ctx.on("dispose", () => {
+    clearInterval(feedTimer);
+    clearTimeout(bootTimer);
+    // v5.2：注册表防抖写盘定时器一并清理
+    if (registry._saveTimer) { clearTimeout(registry._saveTimer); registry._saveTimer = null; }
     for (const db of factory.dbs.values()) db.close();
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-hippocampus",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "海马体记忆 Agent（DSH 客户端插件）：持久记忆存储、神经元网络可视化、可编辑记忆分支，为 Agent 提供 memory_write/read/search/edit/forget 工具",
   "type": "module",
@@ -25,6 +25,9 @@
       ],
       "platform": "web"
     }
+  },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs"
   },
   "license": "MIT",
   "repository": {

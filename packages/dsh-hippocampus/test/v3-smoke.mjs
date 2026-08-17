@@ -91,8 +91,8 @@ const ev = await db.evolve();
 check("演化合并数", typeof ev.merged === "number" && ev.merged >= 0, "merged=" + ev.merged);
 check("演化 epoch+1", ev.meta.epoch >= 2);
 
-// 12. 存储优化（提炼 + 清理 + VACUUM）
-const opt = db.optimizeForSize();
+// 12. 存储优化（提炼 + 清理 + VACUUM）—— v5.2：optimizeForSize 为 async（内部 await 精华提炼防竞态）
+const opt = await db.optimizeForSize();
 check("优化返回", opt.ok === true && typeof opt.freed === "number", JSON.stringify(opt));
 check("优化后尺寸", opt.after <= opt.before || opt.after > 0);
 

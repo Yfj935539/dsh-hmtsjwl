@@ -1,24 +1,51 @@
-# 🧠 海马体记忆 Agent（Hippocampus）v4 —— Wazome Memory Network v4
+# 🧠 海马体记忆 Agent（Hippocampus）v5.2 —— Wazome Memory Network v5.2
 
 [![GitHub](https://img.shields.io/badge/源码仓库-Yfj935539%2Fdsh-hmtsjwl-3d6df2?style=flat-square&logo=github)](https://github.com/Yfj935539/dsh-hmtsjwl)
 
 DeepSeek Harness 客户端插件：为 Agent 提供**有记忆、可创造、可视化**的长期记忆系统，
-基于 **Wazome Memory Network v4** 风格深度改写，强化**项目文件夹记忆**，
+基于 **Wazome Memory Network v5.2** 风格深度改写，强化**项目文件夹记忆**，
 用于**项目推进**与**长上下文污染优化**。
 
 - 在「对话 / 轨迹」之后新增 **「记忆」** 标签页（`conversation.view` 插槽，order 20）
 - 记忆内容：**用户偏好喜好、交流方式、任务进行中的工作状态、洞察**等
 - 每一个记忆**分支**都可以在界面中**手动编辑、修正、归档、删除**（含修正历史）
 - Agent 在工作中可随时用 **memory_write / memory_read / memory_search / memory_edit /
-  memory_forget / memory_stats / memory_context / memory_evolve / memory_analyze** 按指令写入与读取
+  memory_forget / memory_stats / memory_context / memory_evolve / memory_analyze /
+  memory_export / memory_import / memory_review** 按指令写入与读取
+- 对话前自动注入记忆包（`systemPrompt.section`，每轮 turn 前），高质量记忆优先
 
 ## 仓库地址
 
 - 源码仓库：<https://github.com/Yfj935539/dsh-hmtsjwl>
 - 克隆：`git clone https://github.com/Yfj935539/dsh-hmtsjwl.git`
 - 本地开发目录：`hmt/hippocampus`，修改插件后执行 `node install.mjs` 重装到 DSH 生效
+- Client 为多模块源码（`lib/client/`），修改后由 `node scripts/build-client.mjs` 打包为单一 bundle（`install.mjs` 会自动执行）
 
-## v4 深度加工（当前版本）
+## v5.2 稳定性与运行速率加固（当前版本）
+
+| 方向 | 能力 | 实现 |
+| --- | --- | --- |
+| **稳定性** | 嵌入并发队列 | `embedText()` 串行化（Transformers.js 单线程推理），模型加载失败 60s 冷却 + 单次推理 20s 超时降级词法 —— 写/检索路径永不被模型卡住 |
+| | 定时器生命周期 | `apply()` 的喂养/启动定时器 + 注册表防抖写入句柄在 `dispose` 时全部清理 —— 插件重载/更新后不残留双跑 |
+| | 空 patch 保护 | `updateBranch()` 收到全无效 patch 时原样返回（此前生成空 `SET` 触发 SQL 崩溃） |
+| | 归档删向量 | 归档/修剪/合并时同步删除向量行 —— 孤儿向量不再堆积、vec0 索引不膨胀 |
+| | 提取竞态修复 | `distillStale()` 改为 async：先 await 精华更新完成再删除（此前 fire-and-forget 与删除并发产生孤儿向量） |
+| **正确性** | 喂养重嵌入 | `feedTrajectory()` / `autoRefineWorkstate()` 更新内容后重新编码向量（此前内容变了向量不变，语义检索永远命中旧内容） |
+| | 联想扩散修复 | `associateExpand()` 每个种子用**自身向量**找邻居（此前误用查询向量，联想退化为重复召回同一批节点） |
+| | 去重合并质量 | 去重命中时新内容明显更详细则并入原记忆（限长 4000）+ 重嵌入；`contextPack` 注入按质量分过滤低质记忆 |
+| **运行速率** | 活动快照缓存 | `activeBranches()` 1s TTL 快照，检索/联想/去重/记忆包共享一次全表扫描（此前同一检索全表查 2~3 次） |
+| | 统计查询合并 | `buildMeta()` 种类计数单条 `GROUP BY`（此前每种类一次 COUNT）；库大小 10s 缓存免高频 `statSync` |
+| | 导入限流 | `importAll()` 限量 300 条 + 分批让出事件循环；喂养事件截断最近 500 条 |
+
+## v5 UI 视觉优化
+
+- 修复**节点大小不随缩放变化**（投影半径补上 zoom 因子 —— 放大/缩小时节点与边随 3D 透视真实缩放）
+- 修复**能量持续衰减致画布变暗**（能量收敛到真实强度基线，搜索命中拉升、未命中冷却到半亮）
+- **空闲自转**：无交互时球体缓慢自转（搜索态暂停），静止状态立体感持续可见，消除「贴图感」
+- 顶栏收纳：导出/导入/F9 注入日志/F5 手动连线/F6 演化日志收进「⚙ 工具」下拉，界面清爽
+- 激活强度显示真实均值；到期复习卡片 🔔 标记；卡片 hover 浮起、toast 入场动画、滚动条美化
+
+## v4 深度加工（历史基线）
 
 | 方向 | 能力 | 实现 |
 | --- | --- | --- |

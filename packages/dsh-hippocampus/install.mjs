@@ -82,6 +82,22 @@ console.log("🧠 海马体记忆 Agent 安装");
 console.log("   源码:   " + SRC);
 console.log("   DSH 家目录: " + HOME);
 
+// 0. 若存在 client 打包脚本：先由 lib/client/ 多模块源码重新生成 lib/client.js，
+//    确保 bundle 与源码一致（DSH 模块系统要求单一 bundle，避免手工维护两份代码）
+const BUILD_SCRIPT = path.join(SRC, "scripts", "build-client.mjs");
+if (existsSync(BUILD_SCRIPT)) {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync(process.execPath, [BUILD_SCRIPT, "--out", path.join(SRC, "lib", "client.js")], {
+      stdio: "inherit", cwd: SRC
+    });
+    if (r.status === 0) console.log("✅ client bundle 已由 lib/client/ 重新打包");
+    else console.log("  ⚠️  client 打包失败（exit " + r.status + "），将使用仓库内现有 bundle");
+  } catch (err) {
+    console.log("  ⚠️  client 打包跳过: " + err.message);
+  }
+}
+
 // 1. 复制插件包（不含 node_modules：依赖统一 hoist 到顶层）
 safeRm(DEST);
 mkdirSync(DEST, { recursive: true });
