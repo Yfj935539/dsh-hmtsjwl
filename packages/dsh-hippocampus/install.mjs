@@ -6,7 +6,7 @@
 //   3. 插件 package.json 移除 dependencies（消除依赖重装诱因）
 //   4. 在 cordis.patch.yml 注册插件行（幂等）
 // 用法：node install.mjs [--dsh-home <路径>]
-import { mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,27 @@ function copyDir(from, to, skipExisting = false) {
   }
 }
 
+// 递归清除只读位后删除（Windows 下复制回退的副本可能带只读属性，rmSync 会抛 EPERM）
+function clearReadonly(dir) {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const ent of entries) {
+    const p = path.join(dir, ent.name);
+    try {
+      if (ent.isDirectory()) clearReadonly(p);
+      else chmodSync(p, 0o600);
+    } catch {}
+  }
+  try { chmodSync(dir, 0o700); } catch {}
+}
+function safeRm(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); return; } catch {}
+  clearReadonly(dir);
+  try { rmSync(dir, { recursive: true, force: true }); } catch (e) {
+    console.log("  ⚠️  删除失败（可能被占用）: " + dir + " — " + e.message);
+  }
+}
+
 // 写入 package.json 并校验（后端进程占用时首次写入可能被清空，重试）
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -62,7 +83,7 @@ console.log("   源码:   " + SRC);
 console.log("   DSH 家目录: " + HOME);
 
 // 1. 复制插件包（不含 node_modules：依赖统一 hoist 到顶层）
-rmSync(DEST, { recursive: true, force: true });
+safeRm(DEST);
 mkdirSync(DEST, { recursive: true });
 copyDir(path.join(SRC, "lib"), path.join(DEST, "lib"));
 if (existsSync(path.join(SRC, "scripts"))) {
@@ -81,6 +102,42 @@ const SRC_NM = path.join(SRC, "node_modules");
 if (existsSync(SRC_NM)) {
   copyDir(SRC_NM, NM_ROOT, true);
   console.log("✅ 运行时依赖已 hoist 到 " + NM_ROOT);
+}
+
+// 2.1 在插件自身 node_modules 下为 hoisted 包创建 junction
+// DSH 的 ESM loader 在解析插件内的 bare specifier 时不向上遍历
+// （解析链在 @local 作用域处断裂），必须在插件本地 node_modules 中可直接命中
+const PLUGIN_NM = path.join(DEST, "node_modules");
+mkdirSync(PLUGIN_NM, { recursive: true });
+const JUNCTION_PKGS = [
+  "better-sqlite3",
+  "sqlite-vec",
+  "@xenova/transformers",
+];
+for (const spec of JUNCTION_PKGS) {
+  const src = path.join(NM_ROOT, ...spec.split("/"));
+  const dst = path.join(PLUGIN_NM, ...spec.split("/"));
+  if (!existsSync(src)) {
+    console.log("  ⚠️  跳过（hoisted 源不存在）: " + spec);
+    continue;
+  }
+  try {
+    // 确保父目录存在（scoped 包）
+    const parent = path.dirname(dst);
+    mkdirSync(parent, { recursive: true });
+    if (existsSync(dst)) safeRm(dst);
+    // 使用 junction（Windows）/ symlink（POSIX），这里用 fs.symlinkSync 自动选择
+    try {
+      fs.symlinkSync(src, dst, "dir");
+    } catch {
+      // 回退：直接复制（若 symlink 权限不足）
+      copyDir(src, dst);
+    }
+    console.log("✅ 已为本机 ESM 解析创建链接: " + spec);
+  } catch (err) {
+    console.log("  ⚠️  链接失败，回退为复制: " + spec + " — " + err.message);
+    try { copyDir(src, dst); } catch {}
+  }
 }
 
 // 3. 注册到 web profile

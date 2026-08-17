@@ -1,5 +1,7 @@
 # dsh-hippocampus — 海马体记忆 Agent
 
+[![GitHub](https://img.shields.io/badge/源码仓库-Yfj935539%2Fdsh-hmtsjwl-3d6df2?style=flat-square&logo=github)](https://github.com/Yfj935539/dsh-hmtsjwl)
+
 DeepSeek Harness 插件：为 Agent 提供长期记忆能力 —— **3D 球形神经网络可视化**、跨工作区统一的记忆库、每小时轨迹自动喂养、以及**对话前自动注入**关键记忆。
 
 仓库地址：https://github.com/Yfj935539/dsh-hmtsjwl

@@ -1,27 +1,18 @@
 {
-  "name": "@yfj935539/dsh-hippocampus",
-  "version": "0.4.0",
+  "name": "@local/dsh-hippocampus",
+  "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Harness plugin: persistent hippocampus memory with a 3D spherical neural-network visualization, unified cross-workspace store, hourly trajectory feeding, and pre-turn memory injection into the model prompt.",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Yfj935539/dsh-hmtsjwl.git"
-  },
-  "keywords": [
-    "deepseek-harness",
-    "dsh-plugin",
-    "memory",
-    "hippocampus",
-    "neural-network",
-    "vector-database"
-  ],
+  "description": "海马体记忆 Agent（DSH 客户端插件）：持久记忆存储、神经元网络可视化、可编辑记忆分支，为 Agent 提供 memory_write/read/search/edit/forget 工具",
   "type": "module",
   "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
   "exports": {
     ".": {
+      "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
+      "types": "./lib/types/client.d.ts",
       "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
@@ -35,11 +26,12 @@
       "platform": "web"
     }
   },
-  "files": [
-    "lib",
-    "test"
-  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yfj935539/dsh-hmtsjwl.git"
+  },
+  "homepage": "https://github.com/Yfj935539/dsh-hmtsjwl",
   "dependencies": {
     "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^13.0.3",

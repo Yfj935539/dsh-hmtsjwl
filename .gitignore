@@ -1,6 +1,23 @@
 node_modules/
+package-lock.json
 *.log
+*.db
+*.db-journal
+storages/
+models/
+_dbg_tmp.mjs
+_drill_tmp.mjs
+_import_test.mjs
+.vscode/
+.idea/
 .DS_Store
 dist/
-.idea/
-.vscode/
+# 根级开发副本（插件实体在 packages/dsh-hippocampus/ 下，根级仅作本地安装源）
+/lib/
+/test/
+/install.mjs
+/package.json
+/embed-test.mjs
+/vec-test.cjs
+/warm-model.mjs
+/README.md.local

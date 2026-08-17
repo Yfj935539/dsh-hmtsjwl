@@ -1,4 +1,4 @@
-// 海马体记忆 Agent —— 服务端半边（node half）v3（Wazome Memory Network v3.1）
+// 海马体记忆 Agent —— 服务端半边（node half）v4（Wazome Memory Network v4.0）
 // ---------------------------------------------------------------------------
 // SQLite-vec 向量存储 + Transformers.js(bge) 语义编码 + 遗忘衰减 + 三阶段检索
 // v3 深度完善（作为 Agent 的辅助插件，强化项目文件夹记忆、缓解上下文污染）：
@@ -18,6 +18,20 @@
 //   8. 过期记忆（>30 天）：检索降权（×0.55）聚焦当前项目与进度；弱过期
 //      自动归档/删除；超限优化时「先提炼精华喂养，再删除过期无效记忆」
 //   9. 新工具：memory_stats / memory_context / memory_evolve
+// v4 深度加工（架构稳定 × 读取速率 × 训练效果 × 自循环进化演练）：
+//   10. 架构稳定：预编译语句缓存、查询索引、PRAGMA 调优（synchronous/cache/
+//       mmap/temp_store）、多写事务包裹、启动 quick_check 完整性校验、
+//       注册表写入防抖（避免每次 touch 同步写盘）
+//   11. 读取速率：遗忘衰减单条 SQL 批量更新（替代逐行循环）；buildMeta
+//       短时缓存（2s）；查询向量 LRU 缓存（重复搜索免重编码）；检索/联想
+//       复用活动快照，避免同一检索多次全表查询
+//   12. 训练效果：间隔重复衰减（强度越高衰减越慢）；自适应再巩固（命中越
+//       相关强化越多）；自适应学习率（依 fitness 趋势涨跌）；喂养跨小时
+//       窗口去重合并（修复「会话精华 22时/00时 相似度 1.00」重复分支）；
+//       喂养自动提炼工作状态分支
+//   13. 自循环进化演练：evolog 演化日志表；analyze()/drill() 非破坏分析
+//       （冗余/熵/衰减曲线/漂移/可合并候选）；memory_analyze 工具；
+//       定时自动演化（按漂移门控，默认 6h）
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
@@ -30,7 +44,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 /** Cordis 插件元信息 */
 export const name = "hippocampus";
-export const inject = ["tools", "timer"];
+export const inject = ["tools"];
 
 // ---------------------------------------------------------------------------
 // 常量与工具函数
@@ -66,6 +80,13 @@ const W_LEX = 0.35;
 /** 联想展开：从命中点沿相似图扩散的深度 */
 const ASSOC_DEPTH = 2;
 const ASSOC_TOP_K = 8;
+// ---- v4.1 项目精准度：统一库内区分「当前项目记忆」与「跨项目记忆」 ----
+// 目标：既保留统一库跨项目沉淀价值，又把「掌握当前项目」提回第一优先级——
+// 检索当前项目记忆加分优先召回，其他项目记忆降权但不隔离；去重/合并不做跨项目误并。
+/** 命中「当前项目」记忆的项目相关性倍率（>1，检索加分） */
+const PROJECT_HIT_W = 1.3;
+/** 命中「其他项目」记忆的项目相关性倍率（<1，检索降权；偏好/交流/无项目全局记忆不降权） */
+const PROJECT_MISS_W = 0.55;
 /** 写入去重阈值（同种类相似度 ≥ 该值 → 合并强化原记忆） */
 const DEDUP_THRESHOLD = 0.9;
 /** 演化合并阈值（跨分支近重复） */
@@ -105,6 +126,28 @@ const WORKDIR_PREFIX = "wd:";
 const SIGNAL_WORDS = ["记住", "偏好", "喜欢", "不喜欢", "决定", "结论", "下一步", "计划", "注意", "问题", "完成", "修复", "实现", "新增", "重构", "目标", "进度", "阶段", "卡住", "阻塞", "建议", "需要", "改为", "使用"];
 /** 停止词（自动标签用） */
 const STOP_WORDS = new Set(["的", "了", "是", "我", "你", "他", "她", "它", "我们", "你们", "他们", "在", "和", "与", "或", "一个", "这个", "那个", "进行", "使用", "可以", "需要", "没有", "已经", "正在", "工作", "任务", "项目", "记忆", "海马体", "状态", "偏好", "交流", "洞察", "其他", "中", "上", "下", "里", "后", "前", "时", "会", "要", "能", "被", "把", "让", "对", "从", "到", "去", "说", "做", "看"]);
+// ---- v4：深度加工参数 ----
+/** 间隔重复衰减：强度越高衰减越慢 —— 指数缩放范围（k = clamp(1/(0.4+strength), MIN, MAX)） */
+const SPACE_DECAY_MIN = 0.25;
+const SPACE_DECAY_MAX = 1.4;
+/** 自适应学习率上下界（随 fitness 趋势涨跌，参与合并/巩固的增量缩放） */
+const LR_MIN = 0.002;
+const LR_MAX = 0.08;
+const LR_DEFAULT = 0.01;
+/** 自循环自动演化间隔（默认 6h；可用 DSH_HIPPOCAMPUS_EVOLVE_MS 覆盖，便于测试） */
+const EVOLVE_INTERVAL_MS = Number(process.env.DSH_HIPPOCAMPUS_EVOLVE_MS) || 6 * 3600000;
+/** 触发自动演化的最小漂移：距上次演化的新增/修改分支数低于该值则跳过（免无谓演化） */
+const EVOLVE_MIN_DRIFT = 3;
+/** 查询向量 LRU 缓存上限（重复检索免重编码，显著提升读取速率） */
+const QVEC_CACHE_MAX = 64;
+/** buildMeta 统计缓存毫秒（list/stats/context 高频调用时降低重复查询） */
+const META_CACHE_MS = 2000;
+/** 演化日志保留条数 */
+const EVOLOG_KEEP = 30;
+/** 自分析冗余扫描采样条数（按强度取 top N） */
+const ANALYZE_SAMPLE = 40;
+/** 喂养自动提炼工作状态（默认开；DSH_HIPPOCAMPUS_AUTO_STATE=0 关闭） */
+const AUTO_STATE = process.env.DSH_HIPPOCAMPUS_AUTO_STATE !== "0";
 
 function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
@@ -124,7 +167,8 @@ function legacyJsonFile(scope, projectPath) {
   return path.join(storeDir(scope, projectPath), "memory.json");
 }
 function modelCacheDir() {
-  return path.join(dshHome(), "storages", "hippocampus", "models");
+  // v4：支持 DSH_HIPPOCAMPUS_MODELS 覆盖（测试复用真实模型缓存、自定义缓存目录）
+  return process.env.DSH_HIPPOCAMPUS_MODELS || path.join(dshHome(), "storages", "hippocampus", "models");
 }
 function now() {
   return Date.now();
@@ -143,6 +187,32 @@ function hashOf(str) {
 }
 function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+/** 简单 LRU 缓存（有界；读取速率优化的基础设施） */
+class LruCache {
+  constructor(max = 64) {
+    this.max = max;
+    this.map = new Map();
+  }
+  get(key) {
+    const v = this.map.get(key);
+    if (v === void 0) return void 0;
+    // 命中即移到末尾（LRU）
+    this.map.delete(key);
+    this.map.set(key, v);
+    return v;
+  }
+  set(key, value) {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, value);
+    if (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value;
+      this.map.delete(oldest);
+    }
+  }
+  clear() {
+    this.map.clear();
+  }
 }
 /** 安全解析 JSON 数组（数据损坏时回退默认值，避免崩溃） */
 function safeJsonArray(raw, def) {
@@ -389,12 +459,65 @@ class HippocampusDb {
     this.db.loadExtension(getLoadablePath());
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec("PRAGMA busy_timeout=5000;");
+    // v4 读取速率：降 fsync 压力、扩大页缓存、内存映射、临时表入内存
+    this.db.exec("PRAGMA synchronous=NORMAL;");
+    this.db.exec("PRAGMA cache_size=-20000;");
+    this.db.exec("PRAGMA mmap_size=268435456;");
+    this.db.exec("PRAGMA temp_store=MEMORY;");
+    // v4：预编译语句 / 统计缓存 / 查询向量 LRU
+    this.s = new Map();
+    this.metaCache = null;
+    this.qvecCache = new LruCache(QVEC_CACHE_MAX);
     this.initSchema();
+    // v4：预编译语句预热需在 schema 就绪后进行，否则新库会报 no such table
+    this.initStmts();
     this.migrateLegacy();
     // v3.2：一次性合并旧「按项目分库」的数据进统一库（跨目录打通，保留历史记忆）
     this.migrateProjectStores();
+    this.checkIntegrity();
     this.applyDecay();
     this.enforceNodeCap();
+  }
+
+  /** v4：按 SQL 缓存编译语句（避免热路径重复编译） */
+  stmt(sql) {
+    let s = this.s.get(sql);
+    if (!s) {
+      s = this.db.prepare(sql);
+      this.s.set(sql, s);
+    }
+    return s;
+  }
+  initStmts() {
+    // 预热最热路径
+    this.stmt("SELECT * FROM branches WHERE status='active'");
+    this.stmt("SELECT * FROM branches WHERE uid=?");
+    this.stmt("SELECT * FROM branches WHERE title=? AND status='active'");
+    this.stmt("SELECT rowid, distance FROM memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?");
+    this.stmt("SELECT embedding FROM memories WHERE rowid=?");
+    this.stmt("DELETE FROM memories WHERE rowid=?");
+    this.stmt("INSERT INTO memories(rowid, embedding) VALUES (?,?)");
+    this.stmt("SELECT a, b, weight FROM links WHERE a=? OR b=?");
+  }
+
+  /**
+   * v4 启动完整性校验：quick_check 快速体检，损坏时记录到 meta（integrityOk=false）
+   * 并清理孤儿向量（branches 已不存在的向量行），保证后续检索不因脏数据报错。
+   */
+  checkIntegrity() {
+    try {
+      const qc = this.db.pragma("quick_check", { simple: true });
+      const ok = qc === "ok";
+      if (!ok) this.setMeta("integrityOk", false);
+      else this.setMeta("integrityOk", true);
+      if (ok) {
+        // 清理孤儿向量（幂等，代价低）
+        const r = this.db.prepare(
+          "DELETE FROM memories WHERE rowid NOT IN (SELECT id FROM branches)"
+        ).run();
+        if (r.changes > 0) this.setMeta("orphanVecsCleaned", Number(this.getMeta("orphanVecsCleaned", 0)) + r.changes);
+      }
+    } catch { /* 校验失败不阻断插件挂载 */ }
   }
 
   initSchema() {
@@ -436,6 +559,29 @@ class HippocampusDb {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      -- v4：演化日志（自循环进化演练的历史留痕，用于趋势分析）
+      CREATE TABLE IF NOT EXISTS evolog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        merged INTEGER NOT NULL DEFAULT 0,
+        pruned_links INTEGER NOT NULL DEFAULT 0,
+        fitness_before REAL NOT NULL DEFAULT 0,
+        fitness_after REAL NOT NULL DEFAULT 0,
+        lr REAL NOT NULL DEFAULT 0.01,
+        added_since INTEGER NOT NULL DEFAULT 0,
+        nodes INTEGER NOT NULL DEFAULT 0,
+        drift INTEGER NOT NULL DEFAULT 0
+      );
+      -- v4：查询索引（读取速率）
+      CREATE INDEX IF NOT EXISTS idx_branches_status ON branches(status);
+      CREATE INDEX IF NOT EXISTS idx_branches_kind ON branches(kind);
+      CREATE INDEX IF NOT EXISTS idx_branches_updated ON branches(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_branches_created ON branches(created_at);
+      CREATE INDEX IF NOT EXISTS idx_branches_access ON branches(last_access_at);
+      CREATE INDEX IF NOT EXISTS idx_links_a ON links(a);
+      CREATE INDEX IF NOT EXISTS idx_links_b ON links(b);
     `);
     // v3.3：branches 增加所属工作区目录列（旧库幂等迁移）
     try {
@@ -560,14 +706,16 @@ class HippocampusDb {
   }
 
   getMeta(key, def = null) {
-    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key);
+    const row = this.stmt("SELECT value FROM meta WHERE key = ?").get(key);
     if (!row) return def;
     try { return JSON.parse(row.value); } catch { return row.value; }
   }
   setMeta(key, value) {
-    this.db.prepare(
+    this.stmt(
       "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
     ).run(key, JSON.stringify(value));
+    // v4：写入 meta 使统计缓存失效（保持新鲜度）
+    this.metaCache = null;
   }
 
   rowToBranch(row) {
@@ -593,22 +741,58 @@ class HippocampusDb {
     };
   }
 
-  /** 遗忘曲线：按距上次访问的天数衰减强度（v3.3：偏好/交流核心永不自动降强） */
+  /**
+   * 遗忘曲线（v4 间隔重复）：按距上次访问天数批量衰减，单条 SQL 完成（替代逐行循环）。
+   * 指数 k = clamp(1/(0.4+strength), MIN, MAX)：强度越高衰减越慢（艾宾浩斯间隔重复）。
+   * v3.3：偏好/交流核心永不自动降强。
+   */
   applyDecay() {
     const ts = now();
-    const rows = this.db.prepare("SELECT id, strength, last_access_at, updated_at FROM branches WHERE status='active' AND kind NOT IN ('preference','communication')").all();
-    const upd = this.db.prepare("UPDATE branches SET strength=? WHERE id=?");
-    const tx = this.db.transaction((items) => {
-      for (const r of items) {
-        const base = r.last_access_at || r.updated_at || ts;
-        const days = Math.max(0, (ts - base) / DAY_MS);
-        if (days >= 1) {
-          const next = Math.max(STRENGTH_FLOOR, r.strength * Math.pow(DECAY_PER_DAY, days));
-          upd.run(next, r.id);
+    try {
+      const info = this.db.prepare(
+        `UPDATE branches SET strength = MAX(?, strength * POWER(?, (((? - last_access_at) * 1.0) / ?) * clamp((1.0 / (0.4 + strength)), ?, ?)))
+         WHERE status='active' AND kind NOT IN ('preference','communication') AND (? - last_access_at) >= ?`
+      ).run(STRENGTH_FLOOR, DECAY_PER_DAY, ts, DAY_MS, SPACE_DECAY_MIN, SPACE_DECAY_MAX, ts, DAY_MS);
+      return { updated: info.changes };
+    } catch {
+      // 极端旧 SQLite 缺 POWER/clamp：回退逐行计算（行为一致）
+      const rows = this.db.prepare(
+        "SELECT id, strength, last_access_at, updated_at FROM branches WHERE status='active' AND kind NOT IN ('preference','communication')"
+      ).all();
+      const upd = this.db.prepare("UPDATE branches SET strength=? WHERE id=?");
+      const tx = this.db.transaction((items) => {
+        for (const r of items) {
+          const base = r.last_access_at || r.updated_at || ts;
+          const days = Math.max(0, (ts - base) / DAY_MS);
+          if (days >= 1) {
+            const k = clamp(1 / (0.4 + r.strength), SPACE_DECAY_MIN, SPACE_DECAY_MAX);
+            upd.run(Math.max(STRENGTH_FLOOR, r.strength * Math.pow(DECAY_PER_DAY, days * k)), r.id);
+          }
         }
-      }
-    });
-    tx(rows);
+      });
+      tx(rows);
+      return { updated: 0 };
+    }
+  }
+
+  /** v4 自适应学习率：随 fitness 趋势在 evolve 中涨跌，参与巩固/合并增量缩放 */
+  learningRate() {
+    return clamp(Number(this.getMeta("learningRate", LR_DEFAULT)), LR_MIN, LR_MAX);
+  }
+
+  /**
+   * v4 查询向量 LRU：重复检索同一查询免重编码（读取速率）。
+   * 返回归一化 Float32Array；内部缓存 Buffer 以便直接喂 MATCH。
+   */
+  async getQvec(q) {
+    const key = "q:" + String(q ?? "").trim();
+    const hit = this.qvecCache.get(key);
+    if (hit) return { vec: hit.vec, buf: hit.buf };
+    const vec = await embedText(String(q ?? ""));
+    if (!vec) return null;
+    const buf = vecToBuffer(vec);
+    this.qvecCache.set(key, { vec, buf });
+    return { vec, buf };
   }
 
   /** 为全部活跃分支补充/刷新向量（写入时调用，幂等） */
@@ -625,14 +809,17 @@ class HippocampusDb {
     }
   }
 
-  /** 写入/替换某分支的向量（delete + insert 保证幂等） */
+  /** 写入/替换某分支的向量（delete + insert 幂等；v4 事务包裹防半写） */
   storeEmbedding(branchId, vec) {
-    this.db.prepare("DELETE FROM memories WHERE rowid=?").run(BigInt(branchId));
-    this.db.prepare("INSERT INTO memories(rowid, embedding) VALUES (?,?)").run(BigInt(branchId), vecToBuffer(vec));
+    const tx = this.db.transaction((id, buf) => {
+      this.stmt("DELETE FROM memories WHERE rowid=?").run(BigInt(id));
+      this.stmt("INSERT INTO memories(rowid, embedding) VALUES (?,?)").run(BigInt(id), buf);
+    });
+    tx(branchId, vecToBuffer(vec));
   }
 
   embedFor(branchId) {
-    const row = this.db.prepare("SELECT embedding FROM memories WHERE rowid=?").get(BigInt(branchId));
+    const row = this.stmt("SELECT embedding FROM memories WHERE rowid=?").get(BigInt(branchId));
     if (!row || !row.embedding) return null;
     const buf = row.embedding;
     if (buf.length !== EMBED_DIM * 4) return null;
@@ -697,6 +884,34 @@ class HippocampusDb {
   /** 分支是否为核心节点（偏好/交流 —— 永久保留、永不自动降强） */
   isCoreBranch(branch) {
     return !!branch && (branch.kind === "preference" || branch.kind === "communication");
+  }
+
+  /** 目录归属归一化（统一分隔符 + 去尾部斜杠），用于项目归属比较 */
+  normProj(p) {
+    if (!p) return "";
+    return String(p).replace(/[/\\]+/g, "/").replace(/\/+$/, "");
+  }
+
+  /** 两项目路径是否属同一项目（精确匹配或互为父目录前缀，兼容 DSH 多窗口衍生于同一工作区） */
+  sameProject(a, b) {
+    const A = this.normProj(a), B = this.normProj(b);
+    if (!A || !B) return false;
+    if (A === B) return true;
+    return A.startsWith(B + "/") || B.startsWith(A + "/");
+  }
+
+  /**
+   * v4.1 项目相关性权重：根据记忆所属项目与「项目上下文」的关系打分，参与检索融合。
+   *  - 无项目上下文，或记忆为偏好/交流/无项目的全局记忆 → 1（不降权，本就全局适用）
+   *  - 命中项目上下文的记忆 → 加分（PROJECT_HIT_W）；其他项目记忆 → 降权（PROJECT_MISS_W）
+   *  注意：项目路径通过参数显式传入（而非 this 状态），避免统一库单例在多会话间并发互相覆盖。
+   */
+  projectWeight(branch, projectPath) {
+    const ctx = projectPath || this.projectPath || null;
+    if (!ctx || !branch) return 1;
+    if (this.isCoreBranch(branch)) return 1;
+    if (!branch.scopePath) return 1;
+    return this.sameProject(branch.scopePath, ctx) ? PROJECT_HIT_W : PROJECT_MISS_W;
   }
 
   /** 节点 id 是否为核心分支（偏好/交流） */
@@ -780,12 +995,18 @@ class HippocampusDb {
     // v3.3：登记记忆所属工作区目录（球形网络第一环），建立与偏好/交流的永久连接
     if (branch.scopePath) this.upsertWorkdir(branch.scopePath);
     // v3 去重：先编码，与已有同种类记忆比较；≥0.9 则合并强化原记忆
+    // v4.1 项目精准度：对「项目归属明确」的记忆（insight/workstate/other），只允许与【同一项目】的记忆去重合并，
+    // 避免两个不同项目里语义相似但内容独立的记忆被错误合并、导致各项目细节互相污染/丢失。
     const text = [branch.title, branch.tags.join(" "), branch.content].filter(Boolean).join("。");
     const vec = await embedText(text);
     if (vec) {
       const sim = await this.findSimilar(vec, { limit: 3 });
-      const top = sim[0];
-      if (top && top.s >= DEDUP_THRESHOLD && top.b.kind === branch.kind && top.b.status === "active") {
+      const top = sim.find((s) =>
+        s.s >= DEDUP_THRESHOLD && s.b.kind === branch.kind && s.b.status === "active"
+        && (this.isCoreBranch(branch) || this.isCoreBranch(s.b) || !branch.scopePath || !s.b.scopePath
+          || this.sameProject(branch.scopePath, s.b.scopePath))
+      );
+      if (top) {
         const existing = this.getByUid(top.b.id);
         const history = safeJsonArray(
           this.db.prepare("SELECT history FROM branches WHERE uid=?").get(existing.id)?.history, "[]"
@@ -933,8 +1154,8 @@ class HippocampusDb {
     return { branch: this.sanitize(b) };
   }
 
-  /** 三阶段检索：词法 + 语义(向量) + 联想(图扩散)，共激活 Hebbian 强化 */
-  async searchBranches(q, limit) {
+  /** 三阶段检索：词法 + 语义(向量) + 联想(图扩散)，共激活 Hebbian 强化；projectPath 为当前项目上下文 */
+  async searchBranches(q, limit, projectPath) {
     if (typeof q !== "string" || !q.trim()) throw new Error("hippocampus.search: 缺少查询词 q");
     const n = typeof limit === "number" ? clamp(Math.floor(limit), 1, 50) : 8;
     const qTokens = tokensOf(q);
@@ -948,12 +1169,13 @@ class HippocampusDb {
       .slice(0, LEX_TOP_K);
 
     // 阶段 2：语义向量（rowid ↔ 分支映射：vec0 MATCH 返回数字 rowid）
+    // v4：查询向量 LRU —— 同一查询重复检索免重编码
     let sem = [];
-    const qvec = await embedText(q);
-    if (qvec) {
+    const qv = await this.getQvec(q);
+    if (qv) {
       const hits = this.db.prepare(
         "SELECT rowid, distance FROM memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
-      ).all(vecToBuffer(qvec), VEC_TOP_K);
+      ).all(qv.buf, VEC_TOP_K);
       const byId = new Map(active.map((b) => [b.rowId ?? b.id, b]));
       sem = hits
         .map((h) => {
@@ -986,10 +1208,14 @@ class HippocampusDb {
       return x;
     }).sort((x, y) => y.s - x.s);
 
+    // v4.1 项目精准度：统一库内按「项目上下文」加权 —— 当前项目记忆优先召回，
+    // 其他项目记忆降权但不隔离；偏好/交流/无项目的全局记忆不降权。
+    fused = fused.map((x) => ({ b: x.b, s: x.s * this.projectWeight(x.b, projectPath) })).sort((x, y) => y.s - x.s);
+
     // 阶段 3：联想扩散 —— 从 top5 沿相似图（向量 + 突触连接）取邻居
     if (fused.length > 0) {
       const seeds = fused.slice(0, 5);
-      const expanded = this.associateExpand(seeds, n, qvec);
+      const expanded = this.associateExpand(seeds, n, qv ? qv.vec : null);
       const seen = new Set(fused.map((x) => x.b.id));
       for (const e of expanded) {
         if (!seen.has(e.b.id)) {
@@ -1000,19 +1226,35 @@ class HippocampusDb {
     }
     fused = fused.slice(0, Math.max(n, 12)).sort((x, y) => y.s - x.s).slice(0, n);
 
-    // 再巩固：命中前 3 条 + Hebbian 共激活强化（top6 两两连接 +0.02·s·s）
+    // 再巩固（v4 自适应）：命中前 3 条按相关度增量强化（命中越相关强化越多）
+    // + Hebbian 共激活强化（top6 两两连接 +0.02·s·s）—— 这些「真实传输事件」
+    // 通过 signals 返回前端，画布上的脉冲即本次检索真实共激活的边
     const topHits = fused.slice(0, 6);
+    const signalEdges = [];
     for (let i = 0; i < topHits.length; i++) {
       for (let j = i + 1; j < topHits.length; j++) {
-        this.strengthenLink(topHits[i].b.id, topHits[j].b.id, 0.02 * topHits[i].s * topHits[j].s);
+        const delta = 0.02 * topHits[i].s * topHits[j].s;
+        if (delta > 0) {
+          this.strengthenLink(topHits[i].b.id, topHits[j].b.id, delta);
+          signalEdges.push({ a: topHits[i].b.id, b: topHits[j].b.id, delta, weight: Number(clamp(topHits[i].s * topHits[j].s, 0, 1).toFixed(3)) });
+        }
       }
     }
-    for (const { b } of topHits.slice(0, 3)) {
-      b.strength = clamp(b.strength + RECONSOLIDATE_BOOST, 0, 1);
+    const lr = this.learningRate();
+    for (const { b, s } of topHits.slice(0, 3)) {
+      const boost = clamp(RECONSOLIDATE_BOOST * (0.5 + s), 0.025, 0.1) * (1 + lr);
+      b.strength = clamp(b.strength + boost, 0, 1);
       b.lastAccessAt = now();
       this.db.prepare("UPDATE branches SET strength=?, last_access_at=? WHERE id=?").run(b.strength, b.lastAccessAt, b.id);
     }
-    return { results: fused.map(({ b, s }) => ({ branch: this.sanitize(b), score: Number(clamp(s, 0, 1).toFixed(3)) })) };
+    return {
+      results: fused.map(({ b, s }) => ({ branch: this.sanitize(b), score: Number(clamp(s, 0, 1).toFixed(3)) })),
+      signals: {
+        hits: fused.map(({ b, s }) => ({ id: b.id, score: Number(clamp(s, 0, 1).toFixed(3)) })),
+        edges: signalEdges,
+        transmitted: signalEdges.length
+      }
+    };
   }
 
   /** 联想扩散：沿相似图（向量邻居 + 突触连接）从种子 BFS，返回补充结果 */
@@ -1067,6 +1309,13 @@ class HippocampusDb {
     this.setMeta("iteration", Number(this.getMeta("iteration", 0)) + 1);
     this.setMeta("lastActivityAt", now());
 
+    // v4 漂移统计：距上次演化的新增/修改分支数（自动演化门控依据）
+    const lastEvolveAt = Number(this.getMeta("lastEvolveAt", 0)) || 0;
+    const drift = this.db.prepare(
+      "SELECT COUNT(*) c FROM branches WHERE created_at > ? OR updated_at > ?"
+    ).get(lastEvolveAt, lastEvolveAt).c;
+    const fitnessBefore = Number(this.getMeta("fitness", 0));
+
     let merged = 0;
     const seenPairs = new Set();
     const active = this.db.prepare("SELECT * FROM branches WHERE status='active' ORDER BY strength DESC").all().map((r) => this.rowToBranch(r));
@@ -1076,8 +1325,14 @@ class HippocampusDb {
       const emb = this.embedFor(a.rowId);
       if (!emb) continue;
       const sim = await this.findSimilar(emb, { limit: 2, excludeUid: a.id, minScore: MERGE_THRESHOLD });
-      const top = sim[0];
-      if (!top || top.b.kind !== a.kind) continue;
+      // v4.1 项目精准度：演化合并仅限【同一项目】的记忆（核心/无项目归属的记忆不受限），
+      // 防止把不同项目里语义相近但内容独立的记忆合并归档、丢失各自项目细节。
+      const top = sim.find((s) =>
+        s.b.kind === a.kind
+        && (this.isCoreBranch(a) || this.isCoreBranch(s.b) || !a.scopePath || !s.b.scopePath
+          || this.sameProject(a.scopePath, s.b.scopePath))
+      );
+      if (!top) continue;
       const pairKey = a.id < top.b.id ? a.id + "|" + top.b.id : top.b.id + "|" + a.id;
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
@@ -1092,10 +1347,124 @@ class HippocampusDb {
     this.applyDecay();
     const active2 = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
     const avg = active2.length ? active2.reduce((s, b) => s + b.strength, 0) / active2.length : 0;
-    this.setMeta("fitness", Number(avg.toFixed(3)));
+    const fitnessAfter = Number(avg.toFixed(3));
+    this.setMeta("fitness", fitnessAfter);
+    // v4 自适应学习率：fitness 上升 → 加速（×1.06），下降 → 减速（×0.96），有界
+    const lr = this.learningRate();
+    const lrNext = clamp(fitnessAfter > fitnessBefore ? lr * 1.06 : (fitnessAfter < fitnessBefore ? lr * 0.96 : lr), LR_MIN, LR_MAX);
+    this.setMeta("learningRate", Number(lrNext.toFixed(4)));
+    this.setMeta("lastEvolveAt", now());
+    // v4 自循环进化留痕：evolog 演化日志
+    this.appendEvolog({ merged, prunedLinks, fitnessBefore, fitnessAfter, lr: lrNext, drift, nodes: active2.length });
     this.invalidateGraphCache();
     const g = this.graphData();
-    return { ...g, merged, prunedLinks };
+    return { ...g, merged, prunedLinks, fitnessAfter, lr: lrNext, drift };
+  }
+
+  /** v4 演化日志（保留 EVOLOG_KEEP 条，供自循环趋势分析） */
+  appendEvolog(rec) {
+    this.db.prepare(
+      "INSERT INTO evolog (ts, epoch, generation, merged, pruned_links, fitness_before, fitness_after, lr, added_since, nodes, drift) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    ).run(
+      now(), Number(this.getMeta("epoch", 1)), Number(this.getMeta("generation", 0)),
+      rec.merged ?? 0, rec.prunedLinks ?? 0, rec.fitnessBefore ?? 0, rec.fitnessAfter ?? 0,
+      rec.lr ?? LR_DEFAULT, rec.addedSince ?? 0, rec.nodes ?? 0, rec.drift ?? 0
+    );
+    this.db.prepare(
+      "DELETE FROM evolog WHERE id NOT IN (SELECT id FROM evolog ORDER BY id DESC LIMIT ?)"
+    ).run(EVOLOG_KEEP);
+  }
+
+  /**
+   * v4 自循环演练分析（非破坏）：冗余/熵/衰减曲线/漂移/连接健康/孤儿向量。
+   * 只读分析 —— 不会写入任何数据，可作为自动演化的「决策输入」。
+   */
+  async analyze() {
+    const ts = now();
+    const active = this.db.prepare("SELECT * FROM branches WHERE status='active'").all().map((r) => this.rowToBranch(r));
+    const total = active.length;
+
+    // 冗余：采样 top-N 强度分支，向量自相似 ≥0.9 的可合并候选对（跨种类，与去重口径一致）
+    const scan = active.slice().sort((a, b) => b.strength - a.strength).slice(0, ANALYZE_SAMPLE);
+    const redundancy = { pairs: 0, examples: [] };
+    const seen = new Set();
+    for (const a of scan) {
+      const emb = this.embedFor(a.rowId);
+      if (!emb) continue;
+      const sim = await this.findSimilar(emb, { limit: 3, excludeUid: a.id, minScore: 0.9 });
+      for (const s of sim) {
+        const pairKey = a.id < s.b.id ? a.id + "|" + s.b.id : s.b.id + "|" + a.id;
+        if (seen.has(pairKey)) continue;
+        seen.add(pairKey);
+        redundancy.pairs++;
+        if (redundancy.examples.length < 5) {
+          redundancy.examples.push({ a: String(a.title).slice(0, 24), b: String(s.b.title).slice(0, 24), s: Number(s.s.toFixed(2)) });
+        }
+      }
+    }
+
+    // 信息熵：种类分布均匀度（0=单一，max≈1.6=均匀）
+    const kindCounts = {};
+    for (const b of active) kindCounts[b.kind] = (kindCounts[b.kind] ?? 0) + 1;
+    let H = 0;
+    for (const k of Object.keys(kindCounts)) {
+      const p = kindCounts[k] / Math.max(1, total);
+      H -= p * Math.log(p || 1);
+    }
+
+    // 衰减曲线：强度分桶（训练效果的形态）
+    const decayCurve = { weak: 0, mid: 0, strong: 0 };
+    for (const b of active) {
+      if (b.strength < 0.4) decayCurve.weak++;
+      else if (b.strength < 0.6) decayCurve.mid++;
+      else decayCurve.strong++;
+    }
+
+    const staleCut = ts - STALE_DAYS * DAY_MS;
+    const stale = active.filter((b) => b.updatedAt < staleCut && !this.isCoreBranch(b)).length;
+    const links = this.db.prepare("SELECT COUNT(*) c FROM links WHERE weight >= ?").get(LINK_PRUNE_THRESHOLD).c;
+    const weakLinks = this.db.prepare("SELECT COUNT(*) c FROM links WHERE weight < ?").get(LINK_PRUNE_THRESHOLD).c;
+    const orphans = this.db.prepare("SELECT COUNT(*) c FROM memories WHERE rowid NOT IN (SELECT id FROM branches)").get().c;
+    const meta = this.buildMeta();
+    const density = total > 1 ? Number((links / (total * Math.max(1, total - 1) / 2)).toFixed(3)) : 0;
+    const health = total > 0
+      ? Number(clamp((1 - (redundancy.pairs / total) * 0.5) * (1 - (stale / total) * 0.3) * (1 - (orphans / total)), 0, 1).toFixed(3))
+      : 1;
+    return {
+      at: ts,
+      nodes: total,
+      links,
+      weakLinks,
+      orphans,
+      entropy: Number(H.toFixed(3)),
+      redundancy,
+      decayCurve,
+      stale,
+      density,
+      meta: { epoch: meta.epoch, generation: meta.generation, fitness: meta.fitness, learningRate: meta.learningRate },
+      health
+    };
+  }
+
+  /**
+   * v4 自循环进化演练（非破坏）：先 analyze 现状，再模拟一次演化流程
+   * （合并冗余 → 修剪弱连接 → 衰减）的净效果，供「要不要演化」决策。
+   */
+  async drill() {
+    const analysis = await this.analyze();
+    const mergeCandidates = analysis.redundancy.pairs;
+    const pruneCandidates = analysis.weakLinks;
+    const predictedNodesAfterMerge = Math.max(1, analysis.nodes - Math.floor(mergeCandidates * 0.6));
+    return {
+      ...analysis,
+      simulation: {
+        mergeCandidates,
+        pruneCandidates,
+        predictedNodesAfterMerge,
+        predictedLinksAfterPrune: Math.max(0, analysis.links - pruneCandidates),
+        recommended: analysis.health < 0.85 || mergeCandidates >= 3 || analysis.stale >= 3
+      }
+    };
   }
 
   /** 把 weaker 合并进 stronger（归档 weaker，内容摘要并入 stronger 历史） */
@@ -1273,7 +1642,7 @@ class HippocampusDb {
    * （按小时窗口标题，同小时重复喂养自动合并）。
    * 返回 { fed: 事件数, wrote: 是否写入 }。
    */
-  async feedTrajectory(events, sessionId) {
+  async feedTrajectory(events, sessionId, scopePath = null) {
     if (!Array.isArray(events) || events.length === 0) return { fed: 0, wrote: false };
     const ts = now();
     const text = distillTrajectory(events);
@@ -1282,10 +1651,23 @@ class HippocampusDb {
     const windowLabel = new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" });
     const title = "会话精华 " + windowLabel;
     const existing = this.findByTitle(title);
-    if (existing) {
+    let target = existing;
+    if (!target) {
+      // v4 跨窗口语义去重：无精确标题时，与现有「会话精华」高相似(≥0.9)则合并，
+      // 修复「会话精华 22时/00时 相似度 1.00」的重复分支（跨种类比较，不限于同标题）
+      try {
+        const emb = await embedText(text);
+        if (emb) {
+          const sim = await this.findSimilar(emb, { limit: 3, minScore: 0.9 });
+          const best = sim.find((x) => /会话精华|轨迹自动|历史记忆精华/.test(String(x.b.title)));
+          if (best) target = best.b;
+        }
+      } catch { /* 编码失败则退回新建 */ }
+    }
+    if (target) {
       this.db.prepare(
         "UPDATE branches SET content=?, strength=?, updated_at=?, last_access_at=? WHERE uid=?"
-      ).run(text, clamp(existing.strength + 0.05, 0, 1), ts, ts, existing.id);
+      ).run(text, clamp(target.strength + 0.05, 0, 1), ts, ts, target.id);
     } else {
       await this.writeBranch({
         title,
@@ -1297,9 +1679,52 @@ class HippocampusDb {
         sessionId: sessionId ?? null
       });
     }
+    // v4 训练效果：自动提炼当前工作状态（若 events 含用户最新指令）——
+    // 让「当前工作状态」分支始终跟随最近一次任务进展，检索优先级更高
+    if (AUTO_STATE) {
+      try { await this.autoRefineWorkstate(events, sessionId, scopePath); } catch { /* 不阻断喂养主流程 */ }
+    }
     this.setMeta("feedAt", ts);
     this.invalidateGraphCache();
     return { fed: events.length, wrote: true, title, chars: text.length };
+  }
+
+  /**
+   * v4 自动工作状态提炼：取 events 中最新一条用户消息（排除被压缩替换的旧事件）
+   * 作为当前工作内容，upsert 当前项目（scopePath 匹配优先）的 workstate 分支。
+   * 训练效果：workstate 是检索/记忆包的最高优先分支，保持其新鲜 = 项目记忆锚点永远准确。
+   */
+  async autoRefineWorkstate(events, sessionId, scopePath) {
+    const latest = [...events]
+      .filter((ev) => ev && ev.type === "user/message" && !ev.compressed)
+      .sort((a, b) => (a.time || 0) - (b.time || 0))
+      .pop();
+    if (!latest) return false;
+    const content = messageTextOf(latest);
+    if (!content || content.length < 4) return false;
+    const active = this.db.prepare("SELECT * FROM branches WHERE kind='workstate' AND status='active'").all().map((r) => this.rowToBranch(r));
+    let target = null;
+    if (scopePath) target = active.find((b) => b.scopePath === scopePath) ?? null;
+    if (!target) target = active.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+    const title = "工作状态";
+    const ts = now();
+    if (target) {
+      this.db.prepare(
+        "UPDATE branches SET title=?, content=?, updated_at=?, last_access_at=? WHERE uid=?"
+      ).run(title, content.slice(0, 400), ts, ts, target.id);
+    } else {
+      await this.writeBranch({
+        title,
+        content: content.slice(0, 400),
+        kind: "workstate",
+        tags: ["状态"],
+        source: "system",
+        strength: 0.6,
+        sessionId: sessionId ?? null,
+        scopePath: scopePath ?? null
+      });
+    }
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -1452,17 +1877,20 @@ class HippocampusDb {
   }
 
   buildMeta() {
+    // v4 读取速率：2s 短时缓存 —— 高频 list/stats/context 调用免重复聚合查询；
+    // 任何 setMeta 已使缓存失效（metaCache = null）
+    if (this.metaCache && now() - this.metaCache.at < META_CACHE_MS) return this.metaCache.data;
     const total = this.db.prepare("SELECT COUNT(*) AS c FROM branches").get().c;
     const active = this.db.prepare("SELECT COUNT(*) AS c FROM branches WHERE status='active'").get().c;
     const kinds = {};
     for (const k of KINDS) kinds[k] = this.db.prepare("SELECT COUNT(*) AS c FROM branches WHERE kind=? AND status='active'").get(k).c;
     const links = this.db.prepare("SELECT COUNT(*) AS c FROM links WHERE weight >= ?").get(LINK_PRUNE_THRESHOLD).c;
-    return {
+    const data = {
       epoch: Number(this.getMeta("epoch", 1)),
       generation: Number(this.getMeta("generation", 0)),
       iteration: Number(this.getMeta("iteration", 0)),
       error: Number(this.getMeta("error", 0)),
-      learningRate: Number(this.getMeta("learningRate", 0.01)),
+      learningRate: Number(this.getMeta("learningRate", LR_DEFAULT)),
       pruned: Number(this.getMeta("pruned", 0)),
       added: Number(this.getMeta("added", 0)),
       merged: Number(this.getMeta("merged", 0)),
@@ -1485,6 +1913,8 @@ class HippocampusDb {
       ttlBroken: Number(this.getMeta("ttlBroken", 0)),
       archivedWorkdirs: Number(this.getMeta("archivedWorkdirs", 0))
     };
+    this.metaCache = { data, at: now() };
+    return data;
   }
 
   /**
@@ -1579,6 +2009,7 @@ class ActivityRegistry {
   constructor(file) {
     this.file = file;
     this.map = new Map();
+    this._saveTimer = null;
     try {
       const raw = fs.readFileSync(file, "utf8");
       const parsed = JSON.parse(raw);
@@ -1596,10 +2027,19 @@ class ActivityRegistry {
     }
     entry.lastActiveAt = now();
     this.map.set(projectPath, entry);
-    try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, JSON.stringify(Object.fromEntries(this.map)));
-    } catch { /* 注册表写失败不影响主流程 */ }
+    // v4 注册表防抖：高频 touch 不每次写盘，合并为 2s 一次
+    this._debounceSave();
+  }
+
+  _debounceSave() {
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      try {
+        fs.mkdirSync(path.dirname(this.file), { recursive: true });
+        fs.writeFileSync(this.file, JSON.stringify(Object.fromEntries(this.map)));
+      } catch { /* 注册表写失败不影响主流程 */ }
+    }, 2000);
   }
 
   /** 最近活跃的项目（窗口内） */
@@ -1692,8 +2132,9 @@ class HippocampusService extends TypertRemoteService {
 
   /** 三阶段检索 */
   async search(request) {
-    const { q, limit } = isPlainObject(request) ? request : {};
-    return this.dbOf(request).searchBranches(q, limit);
+    const { q, limit, scopePath } = isPlainObject(request) ? request : {};
+    // v4.1 项目精准度：把请求的当前项目路径显式传入检索，用于项目相关性加权
+    return this.dbOf(request).searchBranches(q, limit, scopePath);
   }
 
   /** 可视化图 */
@@ -1714,6 +2155,48 @@ class HippocampusService extends TypertRemoteService {
   /** 修剪：归档弱且久的记忆 */
   async prune(request) {
     return this.dbOf(request).prune();
+  }
+
+  /** v4 自循环演练分析（非破坏）：冗余/熵/衰减曲线/健康度 */
+  async analyze(request) {
+    return this.dbOf(request).analyze();
+  }
+
+  /** v4 自循环进化演练（非破坏）：现状 + 模拟演化净效果 */
+  async drill(request) {
+    return this.dbOf(request).drill();
+  }
+
+  /**
+   * v4 自循环自动演化：演练门控 —— 未到周期/漂移不足/演练不建议则跳过；
+   * 满足条件才真实演化（合并冗余 + 修剪弱连接 + 自适应学习率）。
+   */
+  async autoEvolve() {
+    const db = this.dbOf({ scope: "unified" });
+    const lastAuto = Number(db.getMeta("lastAutoEvolveAt", 0)) || 0;
+    if (now() - lastAuto < EVOLVE_INTERVAL_MS) {
+      return { skipped: true, reason: "未到演化周期" };
+    }
+    // 漂移门控：距上次演化新增/修改太少则免无谓演化
+    const drift = db.db.prepare(
+      "SELECT COUNT(*) c FROM branches WHERE created_at > ? OR updated_at > ?"
+    ).get(lastAuto, lastAuto).c;
+    if (drift < EVOLVE_MIN_DRIFT) {
+      db.setMeta("lastAutoEvolveAt", now());
+      return { skipped: true, reason: "漂移不足（" + drift + "<" + EVOLVE_MIN_DRIFT + "）" };
+    }
+    const analysis = await db.drill();
+    if (!analysis.simulation?.recommended) {
+      db.setMeta("lastAutoEvolveAt", now());
+      return {
+        skipped: true,
+        reason: "演练不建议演化（健康度 " + analysis.health + "，冗余 " + analysis.redundancy.pairs + "，过期 " + analysis.stale + "）",
+        health: analysis.health
+      };
+    }
+    const g = await db.evolve();
+    db.setMeta("lastAutoEvolveAt", now());
+    return { evolved: true, merged: g.merged, prunedLinks: g.prunedLinks, fitnessAfter: g.fitnessAfter, lr: g.lr };
   }
 
   /** 项目记忆包（上下文刷新用） */
@@ -1793,7 +2276,7 @@ class HippocampusService extends TypertRemoteService {
       } catch { /* 单会话读取失败不影响其他 */ }
     }
     events.sort((a, b) => a.time - b.time);
-    const out = db.feedTrajectory(events, ids[0] ?? null);
+    const out = db.feedTrajectory(events, ids[0] ?? null, scopePath ?? null);
     try { out.purged = db.purgeStale(); } catch { /* 清理失败不阻断 */ }
     try { out.size = db.checkSize(); } catch { /* 检查失败不阻断 */ }
     return { ok: true, ...out };
@@ -1849,6 +2332,8 @@ applyRemoteDecorators(HippocampusService, {
   stats: "stats",
   evolve: "evolve",
   prune: "prune",
+  analyze: "analyze",
+  drill: "drill",
   context: "context",
   reportWork: "reportWork",
   feed: "feed",
@@ -1885,6 +2370,8 @@ async function viaService(service, method, request, agent) {
   if (method === "stats") return service.stats(request);
   if (method === "context") return service.context(request);
   if (method === "evolve") return service.evolve(request);
+  if (method === "analyze") return service.analyze(request);
+  if (method === "drill") return service.drill(request);
   if (method === "reportWork") {
     const sessionId = agent?.session?.id ?? null;
     return service.reportWork({ ...request, sessionId });
@@ -2284,6 +2771,60 @@ function defineMemoryTools(service) {
     }
   }));
 
+  // v4 自循环演练分析（非破坏）
+  tools.push(defineTool({
+    name: "memory_analyze",
+    description: "对海马体记忆库执行一次非破坏的「自循环演练分析」：诊断冗余（可合并的近重复对及其示例）、种类信息熵、强度衰减曲线（弱/中/强分布）、过期记忆数、突触连接健康（弱连接/孤儿向量）、网络密度与综合健康度，并给出是否建议演化的判定。只读分析，不修改任何记忆。用于洞察记忆库健康度、判断何时需要演化/清理。",
+    parameters: {
+      scope: scopeParam(),
+      drill: { type: "boolean", description: "true 时额外做一次「进化演练」：模拟合并冗余、修剪弱连接后的净效果与演化建议（默认 true）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          nodes: { type: "number", required: true },
+          links: { type: "number", required: true },
+          entropy: { type: "number", required: true },
+          redundancy: { type: "object", additionalProperties: true, required: true },
+          decayCurve: { type: "object", additionalProperties: true, required: true },
+          stale: { type: "number", required: true },
+          health: { type: "number", required: true },
+          simulation: { type: "object", additionalProperties: true },
+          message: { type: "string", required: true }
+        }
+      },
+      render: (_args, value) => [{
+        type: "text",
+        text: value.message
+      }]
+    },
+    execute: async (args, exec) => {
+      const agent = exec.agent ?? null;
+      const { scope, scopePath } = (() => {
+        const r = dbForScope(service, args.scope, agent);
+        return { scope: r.scope, scopePath: r.scopePath };
+      })();
+      const drill = args.drill !== false;
+      const analysis = drill
+        ? await viaService(service, "drill", { scope, scopePath }, agent)
+        : await viaService(service, "analyze", { scope, scopePath }, agent);
+      const r = analysis.redundancy ?? {};
+      const d = analysis.decayCurve ?? {};
+      const sim = analysis.simulation ?? null;
+      const lines = [
+        "【海马体自循环演练分析】健康度 " + (analysis.health ?? 1) + "（建议演化：" + (sim ? (sim.recommended ? "是" : "否") : "—") + "）",
+        "节点 " + analysis.nodes + " · 突触 " + analysis.links + " · 弱连接 " + (analysis.weakLinks ?? 0) + " · 孤儿向量 " + (analysis.orphans ?? 0) + " · 网络密度 " + (analysis.density ?? 0),
+        "冗余重复对 " + (r.pairs ?? 0) + " 个" + ((r.examples ?? []).length ? "，例如：" + (r.examples ?? []).map((e) => e.a + "↔" + e.b + "(" + e.s + ")").join("、") : ""),
+        "种类信息熵 " + analysis.entropy + " · 强度分布 弱 " + (d.weak ?? 0) + " / 中 " + (d.mid ?? 0) + " / 强 " + (d.strong ?? 0) + " · 过期 " + analysis.stale,
+        "meta: epoch " + (analysis.meta?.epoch ?? 1) + " · generation " + (analysis.meta?.generation ?? 0) + " · fitness " + (analysis.meta?.fitness ?? 0) + " · lr " + (analysis.meta?.learningRate ?? 0.01)
+      ];
+      if (sim) lines.push("进化演练模拟：合并冗余可降节点 " + analysis.nodes + "→" + sim.predictedNodesAfterMerge + "，修剪弱连接 " + sim.pruneCandidates + " 条");
+      return { ...analysis, message: lines.join("\n") };
+    }
+  }));
+
   return tools;
 }
 
@@ -2360,7 +2901,7 @@ export function apply(ctx) {
   // v3.1：每小时自动「轨迹喂养」—— 读取活跃会话的最近轨迹事件（v3.2 统一库：
   // 所有工作区目录的会话都喂进同一记忆库），随后过期清理 + 存储上限检查 +
   // 节点上限淘汰（超 1000 自动淘汰最弱）
-  ctx.setInterval(() => {
+  setInterval(() => {
     void (async () => {
       try {
         const allIds = [...new Set(registry.recentProjects().flatMap((p) => p.sessionIds))];
@@ -2374,12 +2915,19 @@ export function apply(ctx) {
         udb.checkSize();
         udb.enforceNodeCap();
       } catch { /* 清理失败忽略 */ }
+      // v4 自循环进化演练：喂养/清理后按周期做一次演练分析，门控通过才真实演化
+      try {
+        const r = await service.autoEvolve();
+        if (r.evolved) {
+          console.log("[hippocampus] 自动演化完成：合并 " + r.merged + "，修剪 " + r.prunedLinks + "，fitness " + r.fitnessAfter + "，lr " + r.lr);
+        }
+      } catch { /* 自动演化失败不影响 */ }
     })();
   }, FEED_INTERVAL_MS);
 
   // v3.1 启动自检：DSH 启动后 5 秒自动执行一次增量喂养（启动即绑定记忆轨迹），
   // 并后台预热语义编码模型（避免首次检索/喂养卡顿）
-  ctx.setTimeout(() => {
+  setTimeout(() => {
     void (async () => {
       try {
         const allIds = [...new Set(registry.recentProjects().flatMap((p) => p.sessionIds))];

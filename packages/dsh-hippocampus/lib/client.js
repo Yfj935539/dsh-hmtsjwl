@@ -169,6 +169,8 @@ window.__ModuleLoader__.load({
 				D("stats", [P("request")], "stats"),
 				D("evolve", [P("request")], "evolve"),
 				D("prune", [P("request")], "prune"),
+				D("analyze", [P("request")], "analyze"),
+				D("drill", [P("request")], "drill"),
 				D("context", [P("request")], "context"),
 				D("feed", [P("request")], "feed"),
 				D("optimize", [P("request")], "optimize"),
@@ -200,48 +202,48 @@ window.__ModuleLoader__.load({
 			workdir: "#ffd479"
 		};
 		const css = `
-.hp-root{height:100%;max-height:calc(100vh - 140px);min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px 14px;box-sizing:border-box;overflow:hidden}
+.hp-root{height:100%;max-height:calc(100vh - 140px);min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px 14px;box-sizing:border-box;overflow:hidden;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 .hp-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none}
 .hp-stats{display:flex;align-items:center;gap:16px;background:var(--dsw-alias-bg-elevated,#0e1420);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:10px;padding:6px 14px}
 .hp-stat{display:flex;flex-direction:column;line-height:1.25}
-.hp-stat-v{font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6edf3)}
-.hp-stat-k{font-size:10px;color:var(--dsw-alias-label-tertiary,#7d8590)}
-.hp-search{flex:1;min-width:140px;max-width:260px;height:30px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-primary,#e6edf3);padding:0 10px;font-size:12px;outline:none}
+.hp-stat-v{font-size:17px;font-weight:600;color:var(--dsw-alias-label-primary,#eef4fb)}
+.hp-stat-k{font-size:11px;color:var(--dsw-alias-label-tertiary,#9aa4b2)}
+.hp-search{flex:1;min-width:140px;max-width:260px;height:32px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-primary,#e6edf3);padding:0 10px;font-size:13px;outline:none}
 .hp-search:focus{border-color:#3d6df2}
 .hp-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.hp-chip{height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary,#a5adba);font-size:11px;cursor:pointer}
+.hp-chip{height:26px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bfcc);font-size:12px;cursor:pointer}
 .hp-chip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .hp-chip[data-on]{background:#1f3a8a33;border-color:#3d6df2;color:#7ea6ff}
-.hp-btn{height:26px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-secondary,#a5adba);font-size:11px;cursor:pointer;white-space:nowrap}
+.hp-btn{height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-secondary,#b6bfcc);font-size:12px;cursor:pointer;white-space:nowrap}
 .hp-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .hp-btn-primary{border-color:#3d6df2;color:#8ab4ff;background:#1f3a8a33}
 .hp-btn-danger{color:#ff7b72}
 .hp-body{display:flex;gap:10px;flex:1;min-height:0}
 .hp-canvas-wrap{flex:1;min-width:280px;position:relative;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:12px;overflow:hidden;background:#070b12}
 .hp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
-.hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:10px;font-size:10px;color:#5b6472;pointer-events:none;user-select:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:11px;color:#8b96a5;pointer-events:none;user-select:none;font-family:ui-sans-serif,system-ui,sans-serif}
 .hp-empty-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#5b6472;font-size:12px;pointer-events:none;text-align:center;padding:0 30px}
 .hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
 .hp-card{background:var(--dsw-alias-bg-elevated,#0e1420);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:10px;padding:10px 12px;cursor:pointer;transition:border-color .12s}
 .hp-card:hover{border-color:#3d6df2aa}
 .hp-card[data-selected]{border-color:#3d6df2;box-shadow:0 0 0 1px #3d6df255}
 .hp-card-top{display:flex;align-items:center;gap:8px}
-.hp-badge{font-size:10px;padding:1px 8px;border-radius:999px;flex:none;color:#0b0e14}
-.hp-card-title{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6edf3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hp-card-meta{font-size:10px;color:var(--dsw-alias-label-tertiary,#7d8590);flex:none}
+.hp-badge{font-size:11px;padding:1px 9px;border-radius:999px;flex:none;color:#0b0e14;font-weight:600}
+.hp-card-title{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary,#eef4fb);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hp-card-meta{font-size:11px;color:var(--dsw-alias-label-tertiary,#9aa4b2);flex:none}
 .hp-strength{height:3px;border-radius:2px;background:#1c2432;margin:7px 0 6px;overflow:hidden}
 .hp-strength i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,#3d6df2,#4fc3f7)}
-.hp-card-content{font-size:12px;line-height:1.55;color:var(--dsw-alias-label-secondary,#a5adba);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.hp-card-content{font-size:13px;line-height:1.55;color:var(--dsw-alias-label-secondary,#b6bfcc);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .hp-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
-.hp-tag{font-size:10px;color:#7ea6ff;background:#1f3a8a33;padding:1px 7px;border-radius:999px}
+.hp-tag{font-size:11px;color:#7ea6ff;background:#1f3a8a33;padding:1px 7px;border-radius:999px}
 .hp-card-actions{display:flex;gap:6px;margin-top:8px}
-.hp-mini{font-size:11px;color:var(--dsw-alias-label-secondary,#a5adba);background:transparent;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:6px;padding:2px 8px;cursor:pointer}
+.hp-mini{font-size:12px;color:var(--dsw-alias-label-secondary,#b6bfcc);background:transparent;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:6px;padding:3px 9px;cursor:pointer}
 .hp-mini:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .hp-modal{position:fixed;inset:0;background:rgba(2,6,12,.6);display:flex;align-items:center;justify-content:center;z-index:1200;backdrop-filter:blur(2px)}
 .hp-modal-box{width:min(560px,92vw);max-height:86vh;overflow-y:auto;background:var(--dsw-alias-bg-base,#0b1018);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:14px;padding:18px 20px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
 .hp-modal-title{font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6edf3);margin-bottom:14px}
 .hp-field{margin-bottom:12px}
-.hp-field label{display:block;font-size:11px;color:var(--dsw-alias-label-secondary,#a5adba);margin-bottom:5px}
+.hp-field label{display:block;font-size:12px;color:var(--dsw-alias-label-secondary,#b6bfcc);margin-bottom:5px}
 .hp-input{width:100%;box-sizing:border-box;height:32px;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-primary,#e6edf3);padding:0 10px;font-size:13px;outline:none}
 .hp-input:focus{border-color:#3d6df2}
 .hp-textarea{width:100%;box-sizing:border-box;min-height:110px;resize:vertical;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:8px;background:var(--dsw-alias-bg-elevated,#0e1420);color:var(--dsw-alias-label-primary,#e6edf3);padding:8px 10px;font-size:13px;line-height:1.55;outline:none;font-family:inherit}
@@ -251,37 +253,38 @@ window.__ModuleLoader__.load({
 .hp-range{width:100%;accent-color:#3d6df2}
 .hp-range-val{font-size:11px;color:#7ea6ff;margin-left:6px}
 .hp-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
-.hp-note{font-size:11px;color:var(--dsw-alias-label-tertiary,#7d8590);margin-top:10px;line-height:1.6}
-.hp-history{font-size:11px;color:var(--dsw-alias-label-tertiary,#7d8590);margin-top:6px}
+.hp-note{font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa4b2);margin-top:10px;line-height:1.6}
+.hp-history{font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa4b2);margin-top:6px}
 .hp-history div{display:flex;gap:6px}
 .hp-toast{position:fixed;right:18px;bottom:18px;background:#123;border:1px solid #3d6df2;color:#8ab4ff;padding:8px 14px;border-radius:10px;font-size:12px;z-index:1300;box-shadow:0 8px 30px rgba(0,0,0,.4)}
 .hp-error{color:#ff7b72;font-size:12px;padding:8px 0}
 .hp-loading{color:#5b6472;font-size:12px;padding:20px 0;text-align:center}
-.hp-left{width:188px;flex:none;display:flex;flex-direction:column;gap:10px;min-width:170px}
+.hp-left{width:208px;flex:none;display:flex;flex-direction:column;gap:10px;min-width:188px}
 .hp-panel{background:var(--dsw-alias-bg-elevated,#0e1420);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:10px;padding:10px 12px}
-.hp-panel-title{font-size:10px;letter-spacing:.1em;color:#5b6472;text-transform:uppercase;margin-bottom:8px;font-family:ui-monospace,Menlo,monospace;display:flex;align-items:center;gap:6px}
+.hp-panel-title{font-size:11px;letter-spacing:.08em;color:#7d8590;text-transform:uppercase;margin-bottom:8px;font-family:ui-monospace,Menlo,monospace;display:flex;align-items:center;gap:6px}
 .hp-panel-title i{width:6px;height:6px;border-radius:50%;display:inline-block;box-shadow:0 0 6px currentColor}
 .hp-legend{display:flex;flex-direction:column;gap:5px}
-.hp-legend-row{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dsw-alias-label-secondary,#a5adba)}
-.hp-legend-dot{width:9px;height:9px;border-radius:50%;flex:none;box-shadow:0 0 7px currentColor}
-.hp-legend-hint{display:flex;align-items:center;gap:7px;font-size:10px;color:#5b6472;margin-top:3px}
+.hp-legend-row{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dsw-alias-label-secondary,#b6bfcc)}
+.hp-legend-dot{width:10px;height:10px;border-radius:50%;flex:none;box-shadow:0 0 7px currentColor}
+.hp-legend-hint{display:flex;align-items:center;gap:7px;font-size:11px;color:#7d8590;margin-top:3px}
 .hp-legend-size{width:14px;height:3px;border-radius:2px;flex:none;background:linear-gradient(90deg,#5b6472,#4fc3f7)}
-.hp-ctrl-status{display:inline-block;font-size:9px;padding:1px 7px;border-radius:999px;background:#2ea04333;color:#3fb950;margin-bottom:8px;font-family:ui-monospace,Menlo,monospace}
+.hp-legend-line{width:16px;height:3px;border-radius:2px;flex:none;background:currentColor;box-shadow:0 0 5px currentColor}
+.hp-ctrl-status{display:inline-block;font-size:10px;padding:1px 7px;border-radius:999px;background:#2ea04333;color:#3fb950;margin-bottom:8px;font-family:ui-monospace,Menlo,monospace}
 .hp-ctrl-status[data-off]{background:#f8514933;color:#ff7b72}
-.hp-ctrl-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--dsw-alias-label-secondary,#a5adba);margin-bottom:4px}
-.hp-ctrl-row b{color:var(--dsw-alias-label-primary,#e6edf3);font-weight:600;font-family:ui-monospace,Menlo,monospace}
+.hp-ctrl-row{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--dsw-alias-label-secondary,#b6bfcc);margin-bottom:4px}
+.hp-ctrl-row b{color:var(--dsw-alias-label-primary,#eef4fb);font-weight:600;font-family:ui-monospace,Menlo,monospace}
 .hp-ctrl-btns{display:flex;flex-direction:column;gap:6px;margin-top:8px}
 .hp-ctrl-btns .hp-btn{width:100%}
-.hp-statusbar{position:absolute;left:0;right:0;bottom:0;height:26px;display:flex;align-items:center;gap:14px;padding:0 12px;background:rgba(6,10,18,.8);backdrop-filter:blur(3px);border-top:1px solid #1c2432;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#8b96a5;pointer-events:none;z-index:3;overflow:hidden;white-space:nowrap}
-.hp-statusbar b{color:#dbe7ff;font-weight:600}
+.hp-statusbar{position:absolute;left:0;right:0;bottom:0;height:28px;display:flex;align-items:center;gap:14px;padding:0 12px;background:rgba(6,10,18,.85);backdrop-filter:blur(3px);border-top:1px solid #1c2432;font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;color:#9aa4b2;pointer-events:none;z-index:3;overflow:hidden;white-space:nowrap}
+.hp-statusbar b{color:#e6f1ff;font-weight:600}
 .hp-statusbar .hp-sel{display:flex;gap:14px;min-width:0;overflow:hidden}
 .hp-statusbar .hp-sel span{overflow:hidden;text-overflow:ellipsis}
-.hp-status-right{margin-left:auto;display:flex;gap:14px;color:#5b6472;flex:none}
-.hp-status-right b{color:#8b96a5}
+.hp-status-right{margin-left:auto;display:flex;gap:14px;color:#7d8590;flex:none}
+.hp-status-right b{color:#9aa4b2}
 .hp-layer-label{position:absolute;top:8px;font-size:9px;letter-spacing:.06em;color:rgba(120,140,190,.38);pointer-events:none;font-family:ui-monospace,Menlo,monospace;text-transform:uppercase;transform:translateX(-50%)}
 .hp-layer-arrow{position:absolute;top:22px;font-size:8px;color:rgba(120,140,190,.22);pointer-events:none;font-family:ui-monospace,Menlo,monospace;transform:translateX(-50%)}
-.hp-degree{font-size:9px;color:#7ea6ff;background:#1f3a8a33;border-radius:999px;padding:1px 6px;flex:none}
-.hp-age{font-size:9px;color:#5b6472;flex:none}
+.hp-degree{font-size:10px;color:#7ea6ff;background:#1f3a8a33;border-radius:999px;padding:1px 7px;flex:none}
+.hp-age{font-size:10px;color:#7d8590;flex:none}
 `;
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"@local/dsh-hippocampus/MemoryView\"]") === null) {
 			const tag = document.createElement("style");
@@ -296,6 +299,16 @@ window.__ModuleLoader__.load({
 		// ------------------------------------------------------------------
 
 		const KINDS = ["preference", "communication", "workstate", "insight", "other"];
+
+		// 连接含义（颜色 = 原因，用于连线着色与图例）
+		const REASONS = [
+			{ label: "永久锚定", color: "#ffd479" },
+			{ label: "项目归属", color: "#ffb74d" },
+			{ label: "核心协同", color: "#4fc3f7" },
+			{ label: "核心关联", color: "#7fa8ff" },
+			{ label: "同项目", color: "#81c784" },
+			{ label: "语义相似", color: "#ba68c8" }
+		];
 
 		function hashOf(str) {
 			let x = 0;
@@ -325,7 +338,9 @@ window.__ModuleLoader__.load({
 					z: old?.z ?? node.z0 ?? 0,
 					phase: hashOf("ph" + node.id) * Math.PI * 2,
 					r: 4 + node.strength * 7,
-					energy: old?.energy ?? hashOf("e" + node.id),
+					// v4 真实投射：节点初始能量 = 真实激活强度（而非随机值），
+					// 画布亮度/光晕始终反映真实 strength，不再用假随机能量
+					energy: old?.energy ?? node.activation ?? node.strength ?? 0,
 					color: node.type === "workdir" ? "#ffd479" : (KIND_COLORS[node.kind] ?? KIND_COLORS.other)
 				};
 			});
@@ -337,6 +352,8 @@ window.__ModuleLoader__.load({
 				running: prev?.running ?? true,
 				prune: prev?.prune ?? false,
 				hover: null,
+				hoverEdge: null,
+				mouse: prev?.mouse ?? { x: -9999, y: -9999, inside: false },
 				rotX: prev?.rotX ?? -0.35,
 				rotY: prev?.rotY ?? 0.6,
 				epoch: graph.meta?.epoch
@@ -365,20 +382,29 @@ window.__ModuleLoader__.load({
 			return s;
 		}
 
-		function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, onArchiveWorkdir }) {
+		function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir }) {
 			const canvasRef = useRef(null);
 			const wrapRef = useRef(null);
 			const simRef = useRef(null);
 			const sizeRef = useRef({ w: 0, h: 0 });
 			const fpsRef = useRef({ frames: 0, last: performance.now(), fps: 0 });
-			// v3.3：滚轮缩放（0.4x ~ 3x），围绕画布中心
+			// v3.3：滚轮缩放（0.35x ~ 3.5x），围绕画布中心
 			const zoomRef = useRef(1);
 			const [zoom, setZoom] = useState(1);
+			// v4.3 相机：聚焦缓动动画 + 惯性滑行，让旋转与聚焦都平滑稳定
+			const camRef = useRef({ focus: null, velX: 0, velY: 0, dragging: false });
+
+			// v4 真实联通投射：把服务端真实检索结果（命中分数 + 真实共激活边）挂到 sim，
+			// 供 tick/draw 直接投射 —— 画布上的能量与脉冲都来自真实信号
+			useEffect(() => {
+				if (simRef.current) simRef.current.searchHits = searchHits;
+			}, [searchHits]);
 
 			const onWheel = (e) => {
 				e.preventDefault();
-				const next = Math.min(3, Math.max(0.4, zoomRef.current * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+				const next = Math.min(3.5, Math.max(0.35, zoomRef.current * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
 				zoomRef.current = next;
+				camRef.current.focus = null; // 打断聚焦动画
 				setZoom(next);
 			};
 
@@ -408,10 +434,47 @@ window.__ModuleLoader__.load({
 				return () => ro.disconnect();
 			}, []);
 
+			// 平滑聚焦：把节点转到画面正前方（缓动动画，先快后慢）
+			const focusOn = useCallback((id) => {
+				const sim = simRef.current;
+				const cam = camRef.current;
+				if (!sim) return;
+				const node = sim.nodes.find((n) => n.id === id);
+				if (!node) return;
+				const x = node.x, y = node.y, z = node.z;
+				const z1 = Math.sqrt(x * x + z * z) || 1e-6;
+				cam.focus = {
+					t0: performance.now(), dur: 700,
+					fx: sim.rotX, fy: sim.rotY, fz: zoomRef.current,
+					tx: Math.atan2(y, z1), ty: Math.atan2(-x, z),
+					tz: Math.max(zoomRef.current, 1.15)
+				};
+				cam.velX = 0; cam.velY = 0; cam.dragging = false;
+			}, []);
+
+			// 复位相机（双击 / 复位视图）
+			const resetCam = useCallback(() => {
+				const sim = simRef.current;
+				const cam = camRef.current;
+				if (!sim) return;
+				cam.focus = {
+					t0: performance.now(), dur: 700,
+					fx: sim.rotX, fy: sim.rotY, fz: zoomRef.current,
+					tx: -0.35, ty: 0.6, tz: 1
+				};
+				cam.velX = 0; cam.velY = 0;
+			}, []);
+
+			// 选中节点（画布点击 / 列表点击）→ 平滑聚焦到该点
+			useEffect(() => {
+				if (selectedId) focusOn(selectedId);
+			}, [selectedId, focusOn]);
+
 			useEffect(() => {
 				let raf = 0;
 				const tick = () => {
 					const sim = simRef.current;
+					const cam = camRef.current;
 					const fps = fpsRef.current;
 					fps.frames++;
 					const elapsed = performance.now() - fps.last;
@@ -422,13 +485,42 @@ window.__ModuleLoader__.load({
 					}
 					if (sim) {
 						sim.t += 1;
-						// 3D 球形无物理布局：坐标由宿主端 x0/y0/z0 给出，动画在下方呼吸/能量逻辑中执行
-						// 扩散激活：能量沿边传播
-						if (sim.running) {
-							if (Math.random() < 0.06 && sim.nodes.length > 0) {
-								const pick = sim.nodes[Math.floor(Math.random() * sim.nodes.length)];
-								pick.energy = Math.min(1, pick.energy + 0.5);
+						// —— 相机：聚焦缓动（easeOutCubic）+ 释放后惯性滑行 ——
+						if (cam.focus) {
+							const f = cam.focus;
+							const k = Math.min(1, (performance.now() - f.t0) / f.dur);
+							const e = 1 - Math.pow(1 - k, 3);
+							if (k >= 1) {
+								sim.rotX = f.tx; sim.rotY = f.ty;
+								zoomRef.current = f.tz; setZoom(f.tz);
+								cam.focus = null;
+							} else {
+								sim.rotX = f.fx + (f.tx - f.fx) * e;
+								sim.rotY = f.fy + (f.ty - f.fy) * e;
+								zoomRef.current = f.fz + (f.tz - f.fz) * e;
 							}
+							sim.rotX = Math.max(-1.55, Math.min(1.55, sim.rotX));
+						} else if (!cam.dragging && (Math.abs(cam.velX) > 1e-4 || Math.abs(cam.velY) > 1e-4)) {
+							sim.rotY += cam.velX;
+							sim.rotX = Math.max(-1.55, Math.min(1.55, sim.rotX + cam.velY));
+							cam.velX *= 0.9;
+							cam.velY *= 0.9;
+						}
+						// 3D 球形无物理布局：坐标由宿主端 x0/y0/z0 给出，动画在下方呼吸/能量逻辑中执行
+						// v4 真实联通投射：
+						//  - 节点能量基础 = 真实 strength（无随机注入）
+						//  - 搜索态：命中节点能量拉升到【真实检索分数】
+						const sr = sim.searchHits;
+						const activeQ = searchQuery && searchQuery.trim() ? searchQuery.trim().toLowerCase() : null;
+						const hasSignal = !!(sr && activeQ && sr.q === activeQ);
+						if (hasSignal) {
+							for (const node of sim.nodes) {
+								const sc = sr.hits.get(node.id);
+								if (typeof sc === "number") node.energy = Math.min(1, Math.max(node.energy, 0.3 + sc * 0.7));
+								else node.energy *= 0.94; // 未命中节点冷却
+							}
+						}
+						if (sim.running && hasSignal) {
 							for (const e of sim.edges) {
 								const a = sim.nodes.find((x) => x.id === e.a);
 								const b = sim.nodes.find((x) => x.id === e.b);
@@ -437,17 +529,9 @@ window.__ModuleLoader__.load({
 								a.energy -= flow;
 								b.energy += flow;
 							}
-							for (const node of sim.nodes) node.energy *= 0.965;
 						}
-						// 搜索驱动激活：相关节点能量拉升
-						if (searchQuery && searchQuery.trim()) {
-							const q = searchQuery.trim();
-							for (const node of sim.nodes) {
-								const s = lexScore(node, q);
-								if (s > 0) node.energy = Math.min(1, Math.max(node.energy, 0.35 + s * 0.65));
-							}
-						}
-						// 3D 呼吸动画（球体轻微脉动）
+						for (const node of sim.nodes) node.energy = Math.max(0, Math.min(1, node.energy * 0.97));
+						// 3D 呼吸动画（球体轻微脉动，仅视觉装饰）
 						if (sim.running) {
 							for (const node of sim.nodes) {
 								const amp = 0.012 + node.energy * 0.02;
@@ -456,7 +540,9 @@ window.__ModuleLoader__.load({
 								node.z = node.z0 + Math.sin(sim.t * 0.0018 + node.phase * 1.3) * amp;
 							}
 						}
-						draw(canvasRef.current, sim, selectedId, sizeRef.current, searchQuery && searchQuery.trim() ? searchQuery.trim() : null, { rotX: sim.rotX, rotY: sim.rotY, zoom: zoomRef.current });
+						draw(canvasRef.current, sim, selectedId, sizeRef.current, searchQuery && searchQuery.trim() ? searchQuery.trim() : null, {
+							rotX: sim.rotX, rotY: sim.rotY, zoom: zoomRef.current, dragging: cam.dragging
+						});
 					}
 					raf = requestAnimationFrame(tick);
 				};
@@ -514,8 +600,13 @@ window.__ModuleLoader__.load({
 			const onPointerDown = (e) => {
 				const sim = simRef.current;
 				if (!sim) return;
+				const cam = camRef.current;
+				cam.focus = null; // 打断聚焦动画
+				cam.dragging = false;
 				const hit = hitTest(sim, e.clientX, e.clientY);
+				const rect = canvasRef.current?.getBoundingClientRect();
 				pointer.current = { x: e.clientX, y: e.clientY, moved: false, hit };
+				if (sim.mouse) sim.mouse = { x: e.clientX - (rect?.left || 0), y: e.clientY - (rect?.top || 0), inside: true };
 				// 命中节点：记录待选中；空白处：进入球体旋转
 				if (!hit) {
 					canvasRef.current?.setPointerCapture?.(e.pointerId);
@@ -524,20 +615,29 @@ window.__ModuleLoader__.load({
 			const onPointerMove = (e) => {
 				const sim = simRef.current;
 				if (!sim) return;
-				if (pointer.current?.moved === false) {
-					const dx = e.clientX - pointer.current.x;
-					const dy = e.clientY - pointer.current.y;
-					if (dx * dx + dy * dy > 16) pointer.current.moved = true;
-				}
+				const rect = canvasRef.current?.getBoundingClientRect();
+				const mx = e.clientX - (rect?.left || 0);
+				const my = e.clientY - (rect?.top || 0);
+				if (sim.mouse) sim.mouse = { x: mx, y: my, inside: true };
+				const cam = camRef.current;
 				const down = pointer.current;
+				if (down && down.moved === false) {
+					const dx = e.clientX - down.x;
+					const dy = e.clientY - down.y;
+					if (dx * dx + dy * dy > 16) down.moved = true;
+				}
 				if (down && !down.hit && down.moved) {
-					// 空白拖拽 = 3D 球体旋转
+					// 空白拖拽 = 3D 球体旋转（带惯性速度）
 					const dx = (e.clientX - down.x) * 0.005;
 					const dy = (e.clientY - down.y) * 0.005;
+					cam.velX = dx;
+					cam.velY = dy;
 					sim.rotY += dx;
-					sim.rotX += dy;
+					sim.rotX = Math.max(-1.55, Math.min(1.55, sim.rotX + dy));
 					down.x = e.clientX;
 					down.y = e.clientY;
+					cam.dragging = true;
+					sim.hover = null;
 					return;
 				}
 				const hit = hitTest(sim, e.clientX, e.clientY);
@@ -546,10 +646,17 @@ window.__ModuleLoader__.load({
 			const onPointerUp = (e) => {
 				const sim = simRef.current;
 				if (!sim) return;
+				const cam = camRef.current;
 				const moved = pointer.current?.moved === true;
 				const hit = pointer.current?.hit ?? null;
+				if (cam) cam.dragging = false; // 松开后由惯性滑行收尾
 				if (!moved && hit) onSelect(hit.id);
 				pointer.current = null;
+			};
+			const onPointerLeave = () => {
+				const sim = simRef.current;
+				if (sim?.mouse) sim.mouse.inside = false;
+				if (sim) sim.hover = null;
 			};
 			const onContextMenu = (e) => {
 				e.preventDefault();
@@ -566,7 +673,8 @@ window.__ModuleLoader__.load({
 				onSelect(null);
 			};
 			const onDoubleClick = () => {
-				simRef.current = buildSim(graph, null);
+				resetCam();
+				onSelect(null);
 				onReset?.();
 			};
 
@@ -575,15 +683,16 @@ window.__ModuleLoader__.load({
 			const sel = selectedNode ?? null;
 
 			return h("div", { className: "hp-canvas-wrap", ref: wrapRef, style: { position: "relative" } },
-				h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onContextMenu, onDoubleClick, onWheel }),
+				h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, onContextMenu, onDoubleClick, onWheel }),
 				empty ? h("div", { className: "hp-empty-overlay", style: { bottom: 26 } },
 					h("div", { style: { fontSize: 20, opacity: 0.5 } }, "🧠"),
 					h("div", { style: { fontSize: 13 } }, t("empty.title")),
 					h("div", { style: { fontSize: 11 } }, t("empty.body"))) : null,
 				h("div", { className: "hp-hints", style: { bottom: 34 } },
+					h("span", null, "单击节点 = 聚焦"),
+					h("span", null, "拖拽 = 旋转"),
 					h("span", null, "滚轮 = 缩放"),
 					h("span", null, t("hint.reset")),
-					h("span", null, t("hint.drag")),
 					h("span", null, running ? "▸" : "▮")),
 				h("div", { className: "hp-statusbar" },
 						sel
@@ -592,8 +701,8 @@ window.__ModuleLoader__.load({
 								h("span", null, t("status.kind") + ": ", h("b", null, sel.type === "workdir" ? t("kind.workdir") : t("kind." + (sel.kind ?? "other")))),
 								h("span", null, t("status.activation") + ": ", h("b", null, (sel.strength ?? 0).toFixed(3))),
 								h("span", null, t("status.degree") + ": ", h("b", null, String(sel.degree ?? 0))),
-								sel.type === "workdir" && sel.workdir ? h("span", { style: { color: "#8b96a5" } }, sel.workdir) : null)
-							: h("div", { className: "hp-sel" }, h("span", { style: { color: "#5b6472" } }, t("status.none"))),
+								sel.type === "workdir" && sel.workdir ? h("span", { style: { color: "#9aa4b2" } }, sel.workdir) : null)
+							: h("div", { className: "hp-sel" }, h("span", { style: { color: "#7d8590" } }, t("status.none"))),
 						h("div", { className: "hp-status-right" },
 							h("span", null, "Zoom: ", h("b", null, Math.round(zoom * 100) + "%")),
 							h("span", null, t("status.fps") + ": ", h("b", null, String(fps))),
@@ -603,7 +712,34 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		// —— 边连接含义：颜色 = 原因（图例 / 连线着色 / 标注共用）——
+		function edgeReason(a, b) {
+			if (a.type === "workdir" || b.type === "workdir") {
+				const other = a.type === "workdir" ? b : a;
+				if (other.type === "core") return { label: "永久锚定", color: "#ffd479" };
+				if (other.type === "workdir") return { label: "目录关联", color: "#f2b36b" };
+				return { label: "项目归属", color: "#ffb74d" };
+			}
+			if (a.type === "core" && b.type === "core") return { label: "核心协同", color: "#4fc3f7" };
+			if (a.type === "core" || b.type === "core") return { label: "核心关联", color: "#7fa8ff" };
+			if (a.workdir && a.workdir === b.workdir) return { label: "同项目", color: "#81c784" };
+			return { label: "语义相似", color: "#ba68c8" };
+		}
+		function hexA(hex, a) {
+			const n = parseInt(hex.slice(1), 16);
+			return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a.toFixed(3) + ")";
+		}
+		function distToSeg(px, py, x1, y1, x2, y2) {
+			const dx = x2 - x1, dy = y2 - y1;
+			const l2 = dx * dx + dy * dy;
+			if (l2 === 0) return Math.hypot(px - x1, py - y1);
+			let tt = ((px - x1) * dx + (py - y1) * dy) / l2;
+			tt = Math.max(0, Math.min(1, tt));
+			return Math.hypot(px - (x1 + tt * dx), py - (y1 + tt * dy));
+		}
+
 		// v3.3：3D 球形渲染 —— 旋转 + 透视投影 + 深度排序 + 背面衰减
+		// v4.3：层级轨道（三层壳）+ 连接原因着色与标注 + 更高可读的标签
 		function draw(canvas, sim, selectedId, size, searchQuery, view) {
 			if (!canvas || size.w === 0) return;
 			const ctx = canvas.getContext("2d");
@@ -614,6 +750,7 @@ window.__ModuleLoader__.load({
 			const rotX = view.rotX ?? -0.35;
 			const rotY = view.rotY ?? 0.6;
 			const zoom = view.zoom || 1;
+			const dragging = view.dragging ?? false;
 			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 			// 背景
 			const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75);
@@ -622,11 +759,9 @@ window.__ModuleLoader__.load({
 			ctx.fillStyle = bg;
 			ctx.fillRect(0, 0, w, h);
 			// 点阵网格
-			ctx.fillStyle = "rgba(90,110,160,0.10)";
+			ctx.fillStyle = "rgba(90,110,160,0.07)";
 			for (let gx = 18; gx < w; gx += 18) {
-				for (let gy = 18; gy < h; gy += 18) {
-					ctx.fillRect(gx, gy, 1, 1);
-				}
+				for (let gy = 18; gy < h; gy += 18) ctx.fillRect(gx, gy, 1, 1);
 			}
 			// 投影参数
 			const scale = Math.min(w, h) * 0.46 * zoom;
@@ -642,46 +777,160 @@ window.__ModuleLoader__.load({
 			});
 			const byId = new Map(pts.map((p) => [p.node.id, p]));
 			const q = searchQuery ? searchQuery.toLowerCase() : null;
-			const dim = (node) => (q ? (lexScore(node, q) > 0 ? 1 : 0.35) : 1);
+			// v4 真实联通投射：搜索态用【服务端真实检索命中】决定变暗/命中环/共激活脉冲
+			const sr = q && sim.searchHits && sim.searchHits.q === q ? sim.searchHits : null;
+			const nowMs = Date.now();
+			const edgeSignal = new Map();
+			if (sr) for (const e of sr.edges) edgeSignal.set(e.a + "|" + e.b, e);
+			const dim = (node) => {
+				if (!q) return 1;
+				if (sr) return sr.hits.has(node.id) ? 1 : 0.32;
+				return lexScore(node, q) > 0 ? 1 : 0.35;
+			};
+			// v4.2：选中节点关联高亮 —— 计算与 selectedId 直接相连的节点集合和边集合
+			const connectedIds = new Set();
+			const highlightedEdgeSet = new Set();
+			if (selectedId) {
+				for (const e of sim.edges) {
+					if (e.a === selectedId || e.b === selectedId) {
+						highlightedEdgeSet.add(e.a + "|" + e.b);
+						highlightedEdgeSet.add(e.b + "|" + e.a);
+						if (e.a !== selectedId) connectedIds.add(e.a);
+						if (e.b !== selectedId) connectedIds.add(e.b);
+					}
+				}
+			}
+			// 判断节点是否高亮（选中 or 关联）
+			const isHighlighted = (nodeId) => !!selectedId && (nodeId === selectedId || connectedIds.has(nodeId));
+			// 选中高亮覆盖：当选中节点时，覆盖 dim 函数的变暗逻辑
+			const dimWithSelection = (node) => {
+				if (selectedId && !isHighlighted(node.id)) return 0.18; // 非关联节点大幅变暗
+				return dim(node);
+			};
 			// 背面衰减（z 深入背面时变暗变小）
 			const faceA = (p) => Math.max(0.16, Math.min(1, 1.55 - p.depth / fov));
-			// 连接（真实突触权重；3D 端点 + 脉冲沿 3D 线段插值）
+
+			// —— 层级轨道：三层壳（核心 / 工作区 / 衍生）示意，随球体旋转 ——
+			const SHELLS = [
+				{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.40)" },
+				{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.36)" },
+				{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.30)" }
+			];
+			ctx.lineWidth = 1;
+			for (const sh of SHELLS) {
+				ctx.strokeStyle = sh.color;
+				ctx.beginPath();
+				for (let i = 0; i <= 60; i++) {
+					const th = (i / 60) * Math.PI * 2;
+					const p = rotate3(Math.cos(th) * sh.r, 0, Math.sin(th) * sh.r, rotX, rotY);
+					const k = scale / (fov + p.z);
+					const sx = cx + p.x * k, sy = cy - p.y * k;
+					if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+				}
+				ctx.stroke();
+			}
+			// 层标签（左上角固定，可读且不随旋转漂移）
+			ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+			ctx.textBaseline = "top";
+			SHELLS.forEach((sh, i) => {
+				const ly = 30 + i * 18;
+				ctx.fillStyle = "rgba(6,10,18,0.78)";
+				ctx.fillRect(10, ly - 1, 142, 17);
+				ctx.fillStyle = sh.color;
+				ctx.fillText(sh.label, 15, ly);
+			});
+			ctx.textBaseline = "alphabetic";
+
+			// —— 连接（真实突触权重；按连接原因着色；悬停/选中边标注原因+权重）——
+			// 悬停检测：鼠标距离线段最近者
+			let hoverEdge = null;
+			if (sim.mouse && sim.mouse.inside && !dragging) {
+				let bd = 9;
+				for (const e of sim.edges) {
+					const pa = byId.get(e.a), pb = byId.get(e.b);
+					if (!pa || !pb) continue;
+					if (sim.prune && e.weight < 0.3) continue;
+					if (Math.min(faceA(pa), faceA(pb)) < 0.5) continue;
+					const d = distToSeg(sim.mouse.x, sim.mouse.y, pa.sx, pa.sy, pb.sx, pb.sy);
+					if (d < bd) { bd = d; hoverEdge = e; }
+				}
+			}
+			sim.hoverEdge = hoverEdge;
 			for (const e of sim.edges) {
 				const pa = byId.get(e.a);
 				const pb = byId.get(e.b);
 				if (!pa || !pb) continue;
 				if (sim.prune && e.weight < 0.3) continue;
-				const ad = dim(pa.node) * dim(pb.node);
+				const ad = dimWithSelection(pa.node) * dimWithSelection(pb.node);
 				if (ad <= 0.05) continue;
 				const back = Math.min(faceA(pa), faceA(pb));
-				ctx.strokeStyle = "rgba(110,160,255," + ((0.10 + e.weight * 0.30) * ad * back).toFixed(3) + ")";
-				ctx.lineWidth = 0.5 + e.weight * 1.1;
+				const reason = edgeReason(pa.node, pb.node);
+				const isHoverEdge = hoverEdge === e;
+				const isFocusEdge = isHoverEdge || (selectedId && highlightedEdgeSet.has(e.a + "|" + e.b));
+				// v4.3：聚焦/悬停边高亮（加粗 + 白 + 原因色发光）；普通边按原因着色
+				if (isFocusEdge) {
+					ctx.strokeStyle = "rgba(255,255,255," + Math.min(0.96, (0.6 + e.weight * 0.4) * back).toFixed(3) + ")";
+					ctx.lineWidth = 1.8 + e.weight * 2.2;
+					ctx.shadowColor = reason.color;
+					ctx.shadowBlur = 9;
+				} else {
+					ctx.strokeStyle = hexA(reason.color, (0.10 + e.weight * 0.32) * ad * back);
+					ctx.lineWidth = 0.5 + e.weight * 1.2;
+					ctx.shadowBlur = 0;
+				}
 				ctx.beginPath();
 				ctx.moveTo(pa.sx, pa.sy);
 				ctx.lineTo(pb.sx, pb.sy);
 				ctx.stroke();
-				// 激活脉冲（两端 3D 插值后投影）
-				const t = (sim.t * 0.0016 * (0.6 + e.weight) + hashOf(e.a + e.b)) % 1;
-				const ix = pa.node.x + (pb.node.x - pa.node.x) * t;
-				const iy = pa.node.y + (pb.node.y - pa.node.y) * t;
-				const iz = pa.node.z + (pb.node.z - pa.node.z) * t;
-				const r3i = rotate3(ix, iy, iz, rotX, rotY);
-				const ki = scale / (fov + r3i.z);
-				ctx.fillStyle = "rgba(160,200,255," + ((0.3 + e.weight * 0.5) * ad * back).toFixed(3) + ")";
-				ctx.beginPath();
-				ctx.arc(cx + r3i.x * ki, cy - r3i.y * ki, 1.4 + e.weight, 0, Math.PI * 2);
-				ctx.fill();
+				ctx.shadowBlur = 0;
+				// 脉冲：只对【真实共激活边】在真实检索发生后播放一次（从 a→b）
+				const sig = sr ? edgeSignal.get(e.a + "|" + e.b) : null;
+				if (sig && (nowMs - sr.at) < 2000) {
+					const tt = Math.min(1, (nowMs - sr.at) / 2000);
+					const ix = pa.node.x + (pb.node.x - pa.node.x) * tt;
+					const iy = pa.node.y + (pb.node.y - pa.node.y) * tt;
+					const iz = pa.node.z + (pb.node.z - pa.node.z) * tt;
+					const r3i = rotate3(ix, iy, iz, rotX, rotY);
+					const ki = scale / (fov + r3i.z);
+					ctx.fillStyle = "rgba(170,225,255," + Math.max(0, (0.45 + sig.weight * 0.4) * (1 - tt * 0.6) * ad * back).toFixed(3) + ")";
+					ctx.beginPath();
+					ctx.arc(cx + r3i.x * ki, cy - r3i.y * ki, 1.6 + sig.weight * 1.6, 0, Math.PI * 2);
+					ctx.fill();
+				}
+				// 连接原因标注：悬停的边、或选中节点的相连边（标注「原因 · 权重」）
+				if (isFocusEdge) {
+					const mx = (pa.sx + pb.sx) / 2;
+					const my = (pa.sy + pb.sy) / 2;
+					const label = reason.label + " · " + e.weight.toFixed(2);
+					ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+					const tw = ctx.measureText(label).width;
+					const bx = Math.min(w - tw - 10, Math.max(6, mx - tw / 2));
+					const byy = Math.max(18, my - 8);
+					ctx.fillStyle = "rgba(6,10,18,0.88)";
+					ctx.beginPath();
+					ctx.roundRect ? ctx.roundRect(bx - 5, byy - 13, tw + 10, 18, 4) : ctx.rect(bx - 5, byy - 13, tw + 10, 18);
+					ctx.fill();
+					ctx.fillStyle = reason.color;
+					ctx.fillText(label, bx, byy);
+				}
 			}
 			// 节点：按深度从远到近绘制（画家算法）
 			pts.sort((a, b) => b.depth - a.depth);
 			for (const p of pts) {
 				const node = p.node;
-				const d = dim(node);
+				const d = dimWithSelection(node);
 				const back = faceA(p);
 				const base = p.k / (scale / fov);
-				const r = Math.max(2, node.r * base);
-				const glow = 6 + node.energy * 16;
-				ctx.shadowColor = node.color;
+				// 层级区分：核心更大、衍生略小，配合轨道显示层级
+				const sizeK = node.type === "core" ? 1.3 : node.type === "leaf" ? 0.85 : 1;
+				const r = Math.max(2, node.r * base * sizeK);
+				// v4.2：选中/关联节点增加发光强度
+				const highlighted = isHighlighted(node.id);
+				const isSelected = node.id === selectedId;
+				const glow = isSelected ? 18 + node.energy * 22
+					: highlighted ? 12 + node.energy * 18
+					: 6 + node.energy * 16;
+				ctx.shadowColor = isSelected ? "#ffffff" : (highlighted ? "#aaddff" : node.color);
 				ctx.shadowBlur = glow;
 				ctx.fillStyle = node.color;
 				ctx.globalAlpha = (0.55 + node.strength * 0.45) * d * back;
@@ -697,8 +946,9 @@ window.__ModuleLoader__.load({
 					ctx.fill();
 				}
 				ctx.globalAlpha = 1;
-				// 搜索命中环
-				if (q && lexScore(node, q) > 0) {
+				// 搜索命中环（v4：真实检索命中的节点才有环，命中环=真实投射）
+				const isHit = sr ? sr.hits.has(node.id) : !!(q && lexScore(node, q) > 0);
+				if (isHit && !highlighted) {
 					ctx.shadowBlur = 0;
 					ctx.strokeStyle = "rgba(255,255,255," + (0.8 * back).toFixed(2) + ")";
 					ctx.lineWidth = 1.1;
@@ -708,27 +958,48 @@ window.__ModuleLoader__.load({
 					ctx.stroke();
 					ctx.setLineDash([]);
 				}
-				if (node.id === selectedId) {
+				// v4.2：选中/关联节点高亮环（实心白环 + 外发光）
+				if (highlighted) {
 					ctx.shadowBlur = 0;
-					ctx.strokeStyle = "rgba(255,255,255," + (0.95 * back).toFixed(2) + ")";
-					ctx.lineWidth = 1.6;
+					// 外环：选中节点粗白环，关联节点细白环
+					ctx.strokeStyle = isSelected
+						? "rgba(255,255,255," + (0.98 * back).toFixed(2) + ")"
+						: "rgba(170,220,255," + (0.85 * back).toFixed(2) + ")";
+					ctx.lineWidth = isSelected ? 2.4 : 1.6;
 					ctx.beginPath();
-					ctx.arc(p.sx, p.sy, r + 3, 0, Math.PI * 2);
+					ctx.arc(p.sx, p.sy, r + (isSelected ? 5 : 4), 0, Math.PI * 2);
 					ctx.stroke();
+					// 选中节点额外发光圈
+					if (isSelected) {
+						ctx.strokeStyle = "rgba(255,255,255," + (0.35 * back).toFixed(2) + ")";
+						ctx.lineWidth = 5;
+						ctx.beginPath();
+						ctx.arc(p.sx, p.sy, r + 8, 0, Math.PI * 2);
+						ctx.stroke();
+					}
 				}
 				ctx.shadowBlur = 0;
-				if (node.id === sim.hover || node.id === selectedId) {
-					ctx.font = "10px ui-monospace, Menlo, monospace";
-					const tw = ctx.measureText(node.title).width;
-					const tx = Math.min(w - tw - 6, Math.max(6, p.sx - tw / 2));
-					const ty = Math.max(12, p.sy - r - 8);
-					ctx.fillStyle = "rgba(8,12,20,0.72)";
-					ctx.fillRect(tx - 4, ty - 10, tw + 8, 14);
-					ctx.fillStyle = "rgba(230,240,255,0.92)";
-					ctx.fillText(node.title, tx, ty);
-				}
+			// v4.4 标签：仅聚焦（选中）节点显示名称并放大；其它节点一律不显示名称
+			if (isSelected) {
+				ctx.font = "bold 16px ui-sans-serif, system-ui, sans-serif";
+				const tw = ctx.measureText(node.title).width;
+				const tx = Math.min(w - tw - 6, Math.max(6, p.sx - tw / 2));
+				const ty = Math.max(18, p.sy - r - 15);
+				ctx.fillStyle = "rgba(6,10,18,0.88)";
+				ctx.fillRect(tx - 6, ty - 14, tw + 12, 20);
+				ctx.fillStyle = "#ffffff";
+				ctx.fillText(node.title, tx, ty);
+			} else if (node.id === sim.hover && !highlighted) {
+				// 悬停反馈：仅细光环，不显示名称
+				ctx.shadowBlur = 0;
+				ctx.strokeStyle = "rgba(255,255,255," + (0.35 * back).toFixed(2) + ")";
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.arc(p.sx, p.sy, r + 2, 0, Math.PI * 2);
+				ctx.stroke();
 			}
 		}
+	}
 
 		// ------------------------------------------------------------------
 		// 记忆分支列表 + 编辑器
@@ -750,23 +1021,28 @@ window.__ModuleLoader__.load({
 			const color = KIND_COLORS[branch.kind] ?? KIND_COLORS.other;
 			const strength = Number(branch.strength) || 0;
 			const date = new Date(branch.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-			return h("div", { className: "hp-card", "data-id": branch.id, "data-selected": selected || undefined, onClick: () => onSelect(branch.id) },
+			// v4.4：卡片精简，默认折叠；展开 = 选中（点击聚焦的同时展开详情，再次点击收起）
+			const open = !!selected;
+			return h("div", { className: "hp-card", "data-id": branch.id, "data-selected": selected || undefined, onClick: () => onSelect(open ? null : branch.id) },
 				h("div", { className: "hp-card-top" },
 					h("span", { className: "hp-badge", style: { background: color } }, t("kind." + branch.kind)),
 					h("span", { className: "hp-card-title", title: branch.title }, branch.title),
 					typeof degree === "number" && degree > 0 ? h("span", { className: "hp-degree", title: t("status.degree") }, "⚡" + degree) : null,
 					h("span", { className: "hp-age", title: t("status.age") }, ageText(branch.updatedAt, t)),
-					h("span", { className: "hp-card-meta" }, (branch.source === "user" ? t("source.user") : branch.source === "agent" ? t("source.agent") : t("source.system")) + " · " + date)),
+					h("span", { className: "hp-card-meta", style: { color: open ? "#7ea6ff" : "#5b6472" } }, open ? "▾" : "▸")),
 				h("div", { className: "hp-strength", title: t("field.strength") + " " + strength.toFixed(2) + " · " + strengthLabel(strength, t) },
 					h("i", { style: { width: Math.round(strength * 100) + "%" } })),
-				h("div", { className: "hp-card-content" }, branch.content),
-				branch.tags.length > 0 ? h("div", { className: "hp-tags" }, branch.tags.map((tag) => h("span", { className: "hp-tag", key: tag }, "#" + tag))) : null,
-				h("div", { className: "hp-card-actions", onClick: (e) => e.stopPropagation() },
-					h("button", { className: "hp-mini", onClick: () => onEdit(branch) }, t("btn.edit")),
-					branch.status === "active"
-						? h("button", { className: "hp-mini", onClick: () => onArchive(branch) }, t("btn.archive"))
-						: h("button", { className: "hp-mini", onClick: () => onRestore(branch) }, t("btn.restore")),
-					h("button", { className: "hp-mini", style: { color: "#ff7b72" }, onClick: () => onDelete(branch) }, t("btn.delete"))));
+				open ? h(Fragment, null,
+					h("div", { className: "hp-card-content" }, branch.content),
+					branch.tags.length > 0 ? h("div", { className: "hp-tags" }, branch.tags.map((tag) => h("span", { className: "hp-tag", key: tag }, "#" + tag))) : null,
+					h("div", { className: "hp-card-meta" }, (branch.source === "user" ? t("source.user") : branch.source === "agent" ? t("source.agent") : t("source.system")) + " · " + date),
+					h("div", { className: "hp-card-actions", onClick: (e) => e.stopPropagation() },
+						h("button", { className: "hp-mini", onClick: () => onEdit(branch) }, t("btn.edit")),
+						branch.status === "active"
+							? h("button", { className: "hp-mini", onClick: () => onArchive(branch) }, t("btn.archive"))
+							: h("button", { className: "hp-mini", onClick: () => onRestore(branch) }, t("btn.restore")),
+						h("button", { className: "hp-mini", style: { color: "#ff7b72" }, onClick: () => onDelete(branch) }, t("btn.delete"))))
+					: null);
 		}
 
 		function EditorModal(props) {
@@ -968,6 +1244,25 @@ window.__ModuleLoader__.load({
 			useEffect(() => { setSelectedId(null); }, [projectPath]);
 			useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
+			// v4 真实联通投射：搜索输入变化 → 调用服务端真实三阶段检索（语义+词法+联想+突触共激活）
+			// → 把【真实命中分数】与【真实共激活边】挂到画布。画布上的激活/脉冲/命中环都是这次检索
+			// 的真实结果投射，而非客户端近似或装饰动画。
+			const [graphHits, setGraphHits] = useState(null);
+			useEffect(() => {
+				const q = search.trim();
+				if (!q) { setGraphHits(null); return; }
+				const timer = setTimeout(async () => {
+					try {
+						const res = await remoteCall(ctx, "search", { q, limit: 12, ...scopeArgs });
+						if (!res.ok) return;
+						const hits = new Map((res.value?.results ?? []).map((r) => [String(r.branch?.id), Number(r.score ?? 0)]));
+						const edges = (res.value?.signals?.edges ?? []).map((e) => ({ a: String(e.a), b: String(e.b), weight: Number(e.weight ?? 0) }));
+						setGraphHits({ q: q.toLowerCase(), hits, edges, at: Date.now() });
+					} catch { /* 检索失败忽略，画布保持静态真实投射 */ }
+				}, 250);
+				return () => clearTimeout(timer);
+			}, [search, ctx, scopeArgs]);
+
 			const saveBranch = useCallback(async (data) => {
 				if (editing && !isNew) {
 					const res = await remoteCall(ctx, "update", { id: editing.id, patch: data, by: "user", ...scopeArgs });
@@ -1108,6 +1403,14 @@ window.__ModuleLoader__.load({
 							t("legend.links")))),
 				h("div", { className: "hp-panel" },
 					h("div", { className: "hp-panel-title" },
+						h("i", { style: { color: "#7fa8ff" } }),
+						"连接含义"),
+					h("div", { className: "hp-legend" },
+						REASONS.map((r) => h("div", { className: "hp-legend-row", key: r.label },
+							h("span", { className: "hp-legend-line", style: { background: r.color, color: r.color } }),
+							r.label)))),
+				h("div", { className: "hp-panel" },
+					h("div", { className: "hp-panel-title" },
 						h("i", { style: { color: "#81c784" } }),
 						t("ctrl.learning.en")),
 					h("span", { className: "hp-ctrl-status", "data-off": !running || undefined },
@@ -1173,6 +1476,7 @@ window.__ModuleLoader__.load({
 									empty: activeCount === 0,
 									pruneSignal: pruneTick,
 									searchQuery: search,
+									searchHits: graphHits,
 									onArchiveWorkdir: archiveWorkdir
 								}),
 									h("div", { className: "hp-list" },
