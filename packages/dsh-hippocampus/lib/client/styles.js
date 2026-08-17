@@ -21,7 +21,21 @@ const css = `
 .hp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
 .hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:11px;color:#8b96a5;pointer-events:none;user-select:none;font-family:ui-sans-serif,system-ui,sans-serif}
 .hp-empty-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#5b6472;font-size:12px;pointer-events:none;text-align:center;padding:0 30px}
-.hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px}
+/* v5.3：分类抽屉盒（按种类分组） */
+.hp-group-head{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:8px;cursor:pointer;user-select:none;background:transparent;transition:background .12s}
+.hp-group-head:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.hp-group-dot{width:8px;height:8px;border-radius:50%;flex:none;box-shadow:0 0 6px currentColor}
+.hp-group-name{flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bfcc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hp-group-count{font-size:10px;color:#7d8590;background:#1c2432;border-radius:999px;padding:0 7px;line-height:16px;flex:none;font-family:ui-monospace,Menlo,monospace}
+.hp-group-arrow{font-size:10px;color:#7d8590;flex:none}
+/* v5.3：全屏专注模式 —— 隐藏左右/顶部工具栏，3D 视图占满 */
+.hp-focus .hp-header,.hp-focus .hp-left,.hp-focus .hp-list{display:none}
+.hp-focus{max-height:none;padding:8px;gap:0}
+.hp-focus .hp-body{flex:1}
+.hp-focus .hp-canvas-wrap{min-width:0;border-radius:12px}
+.hp-exit-focus{position:absolute;top:12px;right:12px;z-index:20;height:30px;padding:0 14px;border:1px solid #3d6df2;border-radius:8px;background:rgba(13,20,32,.88);color:#8ab4ff;font-size:12px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);backdrop-filter:blur(4px)}
+.hp-exit-focus:hover{background:#1f3a8a55}
 .hp-card{background:var(--dsw-alias-bg-elevated,#0e1420);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:10px;padding:10px 12px;cursor:pointer;transition:border-color .12s, transform .12s, box-shadow .12s}
 .hp-card:hover{border-color:#3d6df2aa;transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,.22)}
 .hp-card[data-selected]{border-color:#3d6df2;box-shadow:0 0 0 1px #3d6df255}

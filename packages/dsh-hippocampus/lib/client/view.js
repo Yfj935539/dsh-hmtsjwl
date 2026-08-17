@@ -300,6 +300,25 @@ function MemoryView(props) {
 		return list;
 	}, [branches, kindFilter, tagFilter, search, showReviewOnly, dueIds]);
 
+	// v5.3：按种类分组的抽屉盒 —— 每组（偏好/交流/工作状态/洞察/其他）可独立折叠
+	const KIND_ORDER = { preference: 0, communication: 1, workstate: 2, insight: 3, other: 4 };
+	const kindGroups = useMemo(() => {
+		const map = new Map();
+		for (const b of filtered) {
+			const k = b.kind ?? "other";
+			if (!map.has(k)) map.set(k, []);
+			map.get(k).push(b);
+		}
+		return [...map.entries()].sort((a, b) => (KIND_ORDER[a[0]] ?? 9) - (KIND_ORDER[b[0]] ?? 9));
+	}, [filtered]);
+	const toggleKind = useCallback((kind) => {
+		setCollapsedKinds((prev) => {
+			const next = new Set(prev);
+			if (next.has(kind)) next.delete(kind); else next.add(kind);
+			return next;
+		});
+	}, []);
+
 	const activeCount = useMemo(() => (branches ?? []).filter((b) => b.status === "active").length, [branches]);
 	const archivedCount = useMemo(() => (branches ?? []).filter((b) => b.status === "archived").length, [branches]);
 
@@ -387,6 +406,10 @@ function MemoryView(props) {
 	const [timelineEvents, setTimelineEvents] = useState(null);
 	// 标签云折叠：默认展开，过长时可收起为一行计数，释放左侧面板空间
 	const [tagCloudOpen, setTagCloudOpen] = useState(true);
+	// v5.3：右侧记忆列表按种类分组成「抽屉盒」（可折叠）；默认全展开
+	const [collapsedKinds, setCollapsedKinds] = useState(() => new Set());
+	// v5.3：全屏专注模式 —— 隐藏左右/顶部工具栏，3D 视图占满
+	const [focusMode, setFocusMode] = useState(false);
 	// v5.2：头部「工具」下拉收纳（导出/导入/F9/F5/F6），减少顶栏拥挤
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const toolsRef = useRef(null);
@@ -566,7 +589,7 @@ function MemoryView(props) {
 				h("button", { className: "hp-btn", onClick: () => { feed(); } }, t("btn.feed")),
 				h("button", { className: "hp-btn", onClick: doPruneView }, t("ctrl.prune")))));
 
-	return h("div", { className: "hp-root" },
+	return h("div", { className: "hp-root" + (focusMode ? " hp-focus" : "") },
 			h("div", { className: "hp-header" },
 				h("div", { className: "hp-scope", style: { display: "flex", alignItems: "center", gap: "8px", background: "var(--dsw-alias-bg-elevated,#0e1420)", border: "1px solid var(--dsw-alias-border-l2,#232b3a)", borderRadius: "10px", padding: "5px 12px" } },
 					h("span", { style: { fontSize: "13px", fontWeight: 600, color: "var(--dsw-alias-label-primary,#e6edf3)" } }, "🧠 " + t("view.memory")),
@@ -585,6 +608,8 @@ function MemoryView(props) {
 				h("button", { className: "hp-btn hp-btn-primary", onClick: () => { setIsNew(true); setEditing({}); } }, t("btn.new")),
 				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: "间隔重复到期待复习" }, "待复习 " + dueCount) : null,
 				h("button", { className: "hp-btn", onClick: loadAll }, t("btn.refresh")),
+				// v5.3：全屏专注 —— 隐藏左右/顶部工具栏，3D 视图占满（Esc / 画布内按钮退出）
+				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: "全屏查看 3D 网络（Esc 退出）" }, "⛶ 全屏"),
 				// v5.2：次要工具收纳进「工具」下拉（导出/导入/F9/F5/F6），顶栏不再拥挤
 				h("div", { className: "hp-tools", ref: toolsRef },
 					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: "导出/导入/注入日志/手动连线/演化日志" }, "⚙ 工具 " + (toolsOpen ? "▾" : "▸")),
@@ -622,23 +647,35 @@ function MemoryView(props) {
 							pruneSignal: pruneTick,
 							searchQuery: search,
 							searchHits: graphHits,
-							onArchiveWorkdir: archiveWorkdir
+							onArchiveWorkdir: archiveWorkdir,
+							focusMode,
+							onToggleFocus: () => setFocusMode((v) => !v)
 						}),
+							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },
 								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, "活跃 " + activeCount + " · 归档 " + archivedCount) : null,
-								filtered.map((branch) => h(BranchCard, {
-									key: branch.id,
-									branch,
-									selected: branch.id === selectedId,
-									degree: degreeMap.get(branch.id) ?? 0,
-									due: branch.status === "active" && dueIds.has(branch.id),
-									onSelect: setSelectedId,
-									onEdit: (b) => { setIsNew(false); setEditing(b); },
-									onArchive: archiveBranch,
-									onRestore: archiveBranch,
-									onDelete: deleteBranch,
-									t
-								})),
+								kindGroups.map(([kind, items]) => {
+									const collapsed = collapsedKinds.has(kind);
+									return h(Fragment, { key: kind },
+										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: collapsed ? "展开 " + t("kind." + kind) : "折叠 " + t("kind." + kind) },
+											h("span", { className: "hp-group-dot", style: { background: KIND_COLORS[kind] ?? KIND_COLORS.other, color: KIND_COLORS[kind] ?? KIND_COLORS.other } }),
+											h("span", { className: "hp-group-name" }, t("kind." + kind)),
+											h("span", { className: "hp-group-count" }, String(items.length)),
+											h("span", { className: "hp-group-arrow" }, collapsed ? "▸" : "▾")),
+										collapsed ? null : items.map((branch) => h(BranchCard, {
+											key: branch.id,
+											branch,
+											selected: branch.id === selectedId,
+											degree: degreeMap.get(branch.id) ?? 0,
+											due: branch.status === "active" && dueIds.has(branch.id),
+											onSelect: setSelectedId,
+											onEdit: (b) => { setIsNew(false); setEditing(b); },
+											onArchive: archiveBranch,
+											onRestore: archiveBranch,
+											onDelete: deleteBranch,
+											t
+										})));
+								}),
 								filtered.length === 0 ? h("div", { className: "hp-loading" }, t("empty.title")) : null))),
 			editing ? h(EditorModal, {
 				branch: isNew ? null : editing,

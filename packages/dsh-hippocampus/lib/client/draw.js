@@ -58,8 +58,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 	bg.addColorStop(1, "#060a12");
 	ctx.fillStyle = bg;
 	ctx.fillRect(0, 0, w, h);
-	// 点阵网格
-	ctx.fillStyle = "rgba(90,110,160,0.07)";
+	// 点阵网格（v5.3：弱化，仅作星空背景底）
+	ctx.fillStyle = "rgba(90,110,160,0.05)";
 	for (let gx = 18; gx < w; gx += 18) {
 		for (let gy = 18; gy < h; gy += 18) ctx.fillRect(gx, gy, 1, 1);
 	}
@@ -110,10 +110,11 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 	const faceA = (p) => Math.max(0.16, Math.min(1, 1.55 - p.depth / fov));
 
 	// —— 层级轨道：三层壳（核心/工作区/衍生）赤道环，保留层级语义 ——
+	// v5.3：轨道透明度整体调低，作为「背景参照」而非视觉主体
 	const SHELLS = [
-		{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.40)" },
-		{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.36)" },
-		{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.30)" }
+		{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.26)" },
+		{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.22)" },
+		{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.18)" }
 	];
 	ctx.lineWidth = 1;
 	for (const sh of SHELLS) {
@@ -182,6 +183,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 		const isHoverEdge = hoverEdge === e;
 		const isFocusEdge = isHoverEdge || (selectedId && highlightedEdgeSet.has(e.a + "|" + e.b));
 		// 聚焦/悬停边高亮（加粗 + 白 + 原因色发光）；普通边按原因着色
+		// v5.3：普通边整体压暗（alpha 0.06+0.20×w、线宽 0.4+0.8×w），减少交叉杂乱；
+		// 视觉焦点从「线」转移到「节点/选中关系」，仅聚焦/悬停边提亮
 		const lwScale = Math.min(2.2, Math.max(0.6, zoom)); // v5.2：线宽随缩放轻微变化
 		if (isFocusEdge) {
 			ctx.strokeStyle = "rgba(255,255,255," + Math.min(0.96, (0.6 + e.weight * 0.4) * back).toFixed(3) + ")";
@@ -189,8 +192,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 			ctx.shadowColor = reason.color;
 			ctx.shadowBlur = 9 * Math.min(1.6, zoom);
 		} else {
-			ctx.strokeStyle = hexA(reason.color, (0.10 + e.weight * 0.32) * ad * back);
-			ctx.lineWidth = (0.5 + e.weight * 1.2) * lwScale;
+			ctx.strokeStyle = hexA(reason.color, (0.06 + e.weight * 0.20) * ad * back);
+			ctx.lineWidth = (0.4 + e.weight * 0.8) * lwScale;
 			ctx.shadowBlur = 0;
 		}
 		ctx.beginPath();
@@ -243,11 +246,12 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 		const sizeK = node.type === "core" ? 1.3 : node.type === "leaf" ? 0.85 : 1;
 		const r = Math.max(1.5, node.r * base * sizeK);
 		// 选中/关联节点发光更强，普通节点弱发光，避免光晕杂乱
+		// v5.3：普通节点光晕减半（3+9e → 1.5+4e），降低整体「过曝感」
 		const highlighted = isHighlighted(node.id);
 		const isSelected = node.id === selectedId;
-		const glow = isSelected ? 14 + node.energy * 16
-			: highlighted ? 9 + node.energy * 12
-			: 3 + node.energy * 9;
+		const glow = isSelected ? 12 + node.energy * 14
+			: highlighted ? 8 + node.energy * 10
+			: 1.5 + node.energy * 4;
 		ctx.shadowColor = isSelected ? "#ffffff" : (highlighted ? "#aaddff" : node.color);
 		ctx.shadowBlur = glow;
 		ctx.globalAlpha = (0.55 + node.strength * 0.45) * d * back;

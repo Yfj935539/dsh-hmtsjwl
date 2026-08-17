@@ -5,7 +5,7 @@ const { buildSim } = require("../sim.js");
 const { rotate3 } = require("../sim.js");
 const { draw } = require("../draw.js");
 
-function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir }) {
+function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus }) {
 	const canvasRef = useRef(null);
 	const wrapRef = useRef(null);
 	const simRef = useRef(null);
@@ -192,11 +192,13 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 				onEvolve();
 			} else if (e.key === "e" || e.key === "E") {
 				onPrune();
+			} else if (e.key === "Escape" && focusMode) {
+				onToggleFocus();
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [onEvolve, onPrune, setRunning]);
+	}, [onEvolve, onPrune, setRunning, focusMode, onToggleFocus]);
 
 	// 3D 命中：投影后按屏幕距离判定（v5.2：命中半径随 zoom 缩放，与渲染一致）
 	const hitTest = useCallback((sim, cx, cy) => {
@@ -312,8 +314,10 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	const m = graph?.meta ?? {};
 	const sel = selectedNode ?? null;
 
-	return h("div", { className: "hp-canvas-wrap", ref: wrapRef, style: { position: "relative" } },
+	return h("div", { className: "hp-canvas-wrap" + (focusMode ? " hp-canvas-full" : ""), ref: wrapRef, style: { position: "relative" } },
 		h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, onContextMenu, onDoubleClick, onWheel }),
+		// v5.3：全屏专注模式的退出按钮（右上角悬浮，Esc 亦可）
+		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, "✕ 退出全屏") : null,
 		empty ? h("div", { className: "hp-empty-overlay", style: { bottom: 26 } },
 			h("div", { style: { fontSize: 20, opacity: 0.5 } }, "🧠"),
 			h("div", { style: { fontSize: 13 } }, t("empty.title")),

@@ -13,7 +13,7 @@ const { buildSim } = require("../sim.js");
 const { rotate3 } = require("../sim.js");
 const { draw } = require("../draw.js");
 
-function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir }) {
+function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvolve, onPrune, running, setRunning, t, empty, pruneSignal, searchQuery, searchHits, onArchiveWorkdir, focusMode, onToggleFocus }) {
 	const canvasRef = useRef(null);
 	const wrapRef = useRef(null);
 	const simRef = useRef(null);
@@ -200,11 +200,13 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 				onEvolve();
 			} else if (e.key === "e" || e.key === "E") {
 				onPrune();
+			} else if (e.key === "Escape" && focusMode) {
+				onToggleFocus();
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [onEvolve, onPrune, setRunning]);
+	}, [onEvolve, onPrune, setRunning, focusMode, onToggleFocus]);
 
 	// 3D 命中：投影后按屏幕距离判定（v5.2：命中半径随 zoom 缩放，与渲染一致）
 	const hitTest = useCallback((sim, cx, cy) => {
@@ -320,8 +322,10 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	const m = graph?.meta ?? {};
 	const sel = selectedNode ?? null;
 
-	return h("div", { className: "hp-canvas-wrap", ref: wrapRef, style: { position: "relative" } },
+	return h("div", { className: "hp-canvas-wrap" + (focusMode ? " hp-canvas-full" : ""), ref: wrapRef, style: { position: "relative" } },
 		h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, onContextMenu, onDoubleClick, onWheel }),
+		// v5.3：全屏专注模式的退出按钮（右上角悬浮，Esc 亦可）
+		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, "✕ 退出全屏") : null,
 		empty ? h("div", { className: "hp-empty-overlay", style: { bottom: 26 } },
 			h("div", { style: { fontSize: 20, opacity: 0.5 } }, "🧠"),
 			h("div", { style: { fontSize: 13 } }, t("empty.title")),
@@ -577,8 +581,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 	bg.addColorStop(1, "#060a12");
 	ctx.fillStyle = bg;
 	ctx.fillRect(0, 0, w, h);
-	// 点阵网格
-	ctx.fillStyle = "rgba(90,110,160,0.07)";
+	// 点阵网格（v5.3：弱化，仅作星空背景底）
+	ctx.fillStyle = "rgba(90,110,160,0.05)";
 	for (let gx = 18; gx < w; gx += 18) {
 		for (let gy = 18; gy < h; gy += 18) ctx.fillRect(gx, gy, 1, 1);
 	}
@@ -629,10 +633,11 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 	const faceA = (p) => Math.max(0.16, Math.min(1, 1.55 - p.depth / fov));
 
 	// —— 层级轨道：三层壳（核心/工作区/衍生）赤道环，保留层级语义 ——
+	// v5.3：轨道透明度整体调低，作为「背景参照」而非视觉主体
 	const SHELLS = [
-		{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.40)" },
-		{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.36)" },
-		{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.30)" }
+		{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.26)" },
+		{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.22)" },
+		{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.18)" }
 	];
 	ctx.lineWidth = 1;
 	for (const sh of SHELLS) {
@@ -701,6 +706,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 		const isHoverEdge = hoverEdge === e;
 		const isFocusEdge = isHoverEdge || (selectedId && highlightedEdgeSet.has(e.a + "|" + e.b));
 		// 聚焦/悬停边高亮（加粗 + 白 + 原因色发光）；普通边按原因着色
+		// v5.3：普通边整体压暗（alpha 0.06+0.20×w、线宽 0.4+0.8×w），减少交叉杂乱；
+		// 视觉焦点从「线」转移到「节点/选中关系」，仅聚焦/悬停边提亮
 		const lwScale = Math.min(2.2, Math.max(0.6, zoom)); // v5.2：线宽随缩放轻微变化
 		if (isFocusEdge) {
 			ctx.strokeStyle = "rgba(255,255,255," + Math.min(0.96, (0.6 + e.weight * 0.4) * back).toFixed(3) + ")";
@@ -708,8 +715,8 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 			ctx.shadowColor = reason.color;
 			ctx.shadowBlur = 9 * Math.min(1.6, zoom);
 		} else {
-			ctx.strokeStyle = hexA(reason.color, (0.10 + e.weight * 0.32) * ad * back);
-			ctx.lineWidth = (0.5 + e.weight * 1.2) * lwScale;
+			ctx.strokeStyle = hexA(reason.color, (0.06 + e.weight * 0.20) * ad * back);
+			ctx.lineWidth = (0.4 + e.weight * 0.8) * lwScale;
 			ctx.shadowBlur = 0;
 		}
 		ctx.beginPath();
@@ -762,11 +769,12 @@ function draw(canvas, sim, selectedId, size, searchQuery, view) {
 		const sizeK = node.type === "core" ? 1.3 : node.type === "leaf" ? 0.85 : 1;
 		const r = Math.max(1.5, node.r * base * sizeK);
 		// 选中/关联节点发光更强，普通节点弱发光，避免光晕杂乱
+		// v5.3：普通节点光晕减半（3+9e → 1.5+4e），降低整体「过曝感」
 		const highlighted = isHighlighted(node.id);
 		const isSelected = node.id === selectedId;
-		const glow = isSelected ? 14 + node.energy * 16
-			: highlighted ? 9 + node.energy * 12
-			: 3 + node.energy * 9;
+		const glow = isSelected ? 12 + node.energy * 14
+			: highlighted ? 8 + node.energy * 10
+			: 1.5 + node.energy * 4;
 		ctx.shadowColor = isSelected ? "#ffffff" : (highlighted ? "#aaddff" : node.color);
 		ctx.shadowBlur = glow;
 		ctx.globalAlpha = (0.55 + node.strength * 0.45) * d * back;
@@ -1193,7 +1201,21 @@ const css = `
 .hp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
 .hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:11px;color:#8b96a5;pointer-events:none;user-select:none;font-family:ui-sans-serif,system-ui,sans-serif}
 .hp-empty-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#5b6472;font-size:12px;pointer-events:none;text-align:center;padding:0 30px}
-.hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px}
+/* v5.3：分类抽屉盒（按种类分组） */
+.hp-group-head{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:8px;cursor:pointer;user-select:none;background:transparent;transition:background .12s}
+.hp-group-head:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.hp-group-dot{width:8px;height:8px;border-radius:50%;flex:none;box-shadow:0 0 6px currentColor}
+.hp-group-name{flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bfcc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hp-group-count{font-size:10px;color:#7d8590;background:#1c2432;border-radius:999px;padding:0 7px;line-height:16px;flex:none;font-family:ui-monospace,Menlo,monospace}
+.hp-group-arrow{font-size:10px;color:#7d8590;flex:none}
+/* v5.3：全屏专注模式 —— 隐藏左右/顶部工具栏，3D 视图占满 */
+.hp-focus .hp-header,.hp-focus .hp-left,.hp-focus .hp-list{display:none}
+.hp-focus{max-height:none;padding:8px;gap:0}
+.hp-focus .hp-body{flex:1}
+.hp-focus .hp-canvas-wrap{min-width:0;border-radius:12px}
+.hp-exit-focus{position:absolute;top:12px;right:12px;z-index:20;height:30px;padding:0 14px;border:1px solid #3d6df2;border-radius:8px;background:rgba(13,20,32,.88);color:#8ab4ff;font-size:12px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);backdrop-filter:blur(4px)}
+.hp-exit-focus:hover{background:#1f3a8a55}
 .hp-card{background:var(--dsw-alias-bg-elevated,#0e1420);border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:10px;padding:10px 12px;cursor:pointer;transition:border-color .12s, transform .12s, box-shadow .12s}
 .hp-card:hover{border-color:#3d6df2aa;transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,.22)}
 .hp-card[data-selected]{border-color:#3d6df2;box-shadow:0 0 0 1px #3d6df255}
@@ -1627,6 +1649,25 @@ function MemoryView(props) {
 		return list;
 	}, [branches, kindFilter, tagFilter, search, showReviewOnly, dueIds]);
 
+	// v5.3：按种类分组的抽屉盒 —— 每组（偏好/交流/工作状态/洞察/其他）可独立折叠
+	const KIND_ORDER = { preference: 0, communication: 1, workstate: 2, insight: 3, other: 4 };
+	const kindGroups = useMemo(() => {
+		const map = new Map();
+		for (const b of filtered) {
+			const k = b.kind ?? "other";
+			if (!map.has(k)) map.set(k, []);
+			map.get(k).push(b);
+		}
+		return [...map.entries()].sort((a, b) => (KIND_ORDER[a[0]] ?? 9) - (KIND_ORDER[b[0]] ?? 9));
+	}, [filtered]);
+	const toggleKind = useCallback((kind) => {
+		setCollapsedKinds((prev) => {
+			const next = new Set(prev);
+			if (next.has(kind)) next.delete(kind); else next.add(kind);
+			return next;
+		});
+	}, []);
+
 	const activeCount = useMemo(() => (branches ?? []).filter((b) => b.status === "active").length, [branches]);
 	const archivedCount = useMemo(() => (branches ?? []).filter((b) => b.status === "archived").length, [branches]);
 
@@ -1714,6 +1755,10 @@ function MemoryView(props) {
 	const [timelineEvents, setTimelineEvents] = useState(null);
 	// 标签云折叠：默认展开，过长时可收起为一行计数，释放左侧面板空间
 	const [tagCloudOpen, setTagCloudOpen] = useState(true);
+	// v5.3：右侧记忆列表按种类分组成「抽屉盒」（可折叠）；默认全展开
+	const [collapsedKinds, setCollapsedKinds] = useState(() => new Set());
+	// v5.3：全屏专注模式 —— 隐藏左右/顶部工具栏，3D 视图占满
+	const [focusMode, setFocusMode] = useState(false);
 	// v5.2：头部「工具」下拉收纳（导出/导入/F9/F5/F6），减少顶栏拥挤
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const toolsRef = useRef(null);
@@ -1893,7 +1938,7 @@ function MemoryView(props) {
 				h("button", { className: "hp-btn", onClick: () => { feed(); } }, t("btn.feed")),
 				h("button", { className: "hp-btn", onClick: doPruneView }, t("ctrl.prune")))));
 
-	return h("div", { className: "hp-root" },
+	return h("div", { className: "hp-root" + (focusMode ? " hp-focus" : "") },
 			h("div", { className: "hp-header" },
 				h("div", { className: "hp-scope", style: { display: "flex", alignItems: "center", gap: "8px", background: "var(--dsw-alias-bg-elevated,#0e1420)", border: "1px solid var(--dsw-alias-border-l2,#232b3a)", borderRadius: "10px", padding: "5px 12px" } },
 					h("span", { style: { fontSize: "13px", fontWeight: 600, color: "var(--dsw-alias-label-primary,#e6edf3)" } }, "🧠 " + t("view.memory")),
@@ -1912,6 +1957,8 @@ function MemoryView(props) {
 				h("button", { className: "hp-btn hp-btn-primary", onClick: () => { setIsNew(true); setEditing({}); } }, t("btn.new")),
 				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: "间隔重复到期待复习" }, "待复习 " + dueCount) : null,
 				h("button", { className: "hp-btn", onClick: loadAll }, t("btn.refresh")),
+				// v5.3：全屏专注 —— 隐藏左右/顶部工具栏，3D 视图占满（Esc / 画布内按钮退出）
+				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: "全屏查看 3D 网络（Esc 退出）" }, "⛶ 全屏"),
 				// v5.2：次要工具收纳进「工具」下拉（导出/导入/F9/F5/F6），顶栏不再拥挤
 				h("div", { className: "hp-tools", ref: toolsRef },
 					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: "导出/导入/注入日志/手动连线/演化日志" }, "⚙ 工具 " + (toolsOpen ? "▾" : "▸")),
@@ -1949,23 +1996,35 @@ function MemoryView(props) {
 							pruneSignal: pruneTick,
 							searchQuery: search,
 							searchHits: graphHits,
-							onArchiveWorkdir: archiveWorkdir
+							onArchiveWorkdir: archiveWorkdir,
+							focusMode,
+							onToggleFocus: () => setFocusMode((v) => !v)
 						}),
+							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },
 								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, "活跃 " + activeCount + " · 归档 " + archivedCount) : null,
-								filtered.map((branch) => h(BranchCard, {
-									key: branch.id,
-									branch,
-									selected: branch.id === selectedId,
-									degree: degreeMap.get(branch.id) ?? 0,
-									due: branch.status === "active" && dueIds.has(branch.id),
-									onSelect: setSelectedId,
-									onEdit: (b) => { setIsNew(false); setEditing(b); },
-									onArchive: archiveBranch,
-									onRestore: archiveBranch,
-									onDelete: deleteBranch,
-									t
-								})),
+								kindGroups.map(([kind, items]) => {
+									const collapsed = collapsedKinds.has(kind);
+									return h(Fragment, { key: kind },
+										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: collapsed ? "展开 " + t("kind." + kind) : "折叠 " + t("kind." + kind) },
+											h("span", { className: "hp-group-dot", style: { background: KIND_COLORS[kind] ?? KIND_COLORS.other, color: KIND_COLORS[kind] ?? KIND_COLORS.other } }),
+											h("span", { className: "hp-group-name" }, t("kind." + kind)),
+											h("span", { className: "hp-group-count" }, String(items.length)),
+											h("span", { className: "hp-group-arrow" }, collapsed ? "▸" : "▾")),
+										collapsed ? null : items.map((branch) => h(BranchCard, {
+											key: branch.id,
+											branch,
+											selected: branch.id === selectedId,
+											degree: degreeMap.get(branch.id) ?? 0,
+											due: branch.status === "active" && dueIds.has(branch.id),
+											onSelect: setSelectedId,
+											onEdit: (b) => { setIsNew(false); setEditing(b); },
+											onArchive: archiveBranch,
+											onRestore: archiveBranch,
+											onDelete: deleteBranch,
+											t
+										})));
+								}),
 								filtered.length === 0 ? h("div", { className: "hp-loading" }, t("empty.title")) : null))),
 			editing ? h(EditorModal, {
 				branch: isNew ? null : editing,
