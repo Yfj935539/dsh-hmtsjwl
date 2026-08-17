@@ -367,6 +367,16 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
+		// v5.5 联想交汇节点标识：标题带 ⟡ 的记忆是「连线交叉产生的真实微弱新想法」
+		// （记忆库中的 insight 分支，可检索/注入/演化/修剪 —— 数据驱动而非装饰）
+		if (node.title && node.title.startsWith("⟡") && !highlighted && !anchorSet?.has(node.id)) {
+			const tw = ctx.measureText("⟡").width;
+			ctx.shadowBlur = 0;
+			ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+			ctx.fillStyle = "rgba(186,104,200," + (0.55 + node.energy * 0.35).toFixed(2) + ")";
+			ctx.fillText("⟡", p.sx - tw / 2, p.sy - r - 6);
+			ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+		}
 	}
 }
 

@@ -220,6 +220,35 @@ function hashOf(str) {
   for (let i = 0; i < str.length; i++) x = (x * 31 + str.charCodeAt(i)) >>> 0;
   return x / 4294967296;
 }
+
+/**
+ * v5.5 3D 线段间最短距离（参数化钳制法）：
+ * 用于检测两条「联想连线」在球坐标空间是否交汇 —— 交汇即「思维路径交叉」。
+ */
+function segSegDist3(a, b, c, d) {
+  const ax = b.x - a.x, ay = b.y - a.y, az = b.z - a.z;
+  const cx = d.x - c.x, cy = d.y - c.y, cz = d.z - c.z;
+  const rx = a.x - c.x, ry = a.y - c.y, rz = a.z - c.z;
+  const A = ax * ax + ay * ay + az * az;
+  const E = cx * cx + cy * cy + cz * cz;
+  const F = cx * rx + cy * ry + cz * rz;
+  const C = ax * rx + ay * ry + az * rz;
+  const B = ax * cx + ay * cy + az * cz;
+  const D = A * E - B * B;
+  let s, t;
+  if (D > 1e-9) {
+    s = Math.min(1, Math.max(0, (B * F - C * E) / D));
+  } else {
+    s = 0;
+  }
+  t = (B * s + F) / (E || 1e-9);
+  if (t < 0) { t = 0; s = Math.min(1, Math.max(0, -C / (A || 1e-9))); }
+  else if (t > 1) { t = 1; s = Math.min(1, Math.max(0, (B - C) / (A || 1e-9))); }
+  const px = a.x + ax * s, py = a.y + ay * s, pz = a.z + az * s;
+  const qx = c.x + cx * t, qy = c.y + cy * t, qz = c.z + cz * t;
+  const dx = px - qx, dy = py - qy, dz = pz - qz;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
 function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -1502,6 +1531,11 @@ class HippocampusDb {
       this.anchors.activate(fused.slice(0, 5).map((x) => x.b.id), 0.5);
       this.anchors.purge();
     }
+    // v5.5 联想交汇：检索是「思维活动」，命中后检测连线交叉 → 真实生成微弱新想法分支
+    // （fire-and-forget：不阻塞检索返回；内部有 5 分钟冷却与去重）
+    if (process.env.DSH_HIPPOCAMPUS_CROSSLINK !== "0") {
+      this.crossLink({ maxCreated: 1 }).catch(() => {});
+    }
     return {
       results: fused.map(({ b, s }) => ({ branch: this.sanitize(b), score: Number(clamp(s, 0, 1).toFixed(3)) })),
       signals: {
@@ -1594,6 +1628,116 @@ class HippocampusDb {
       .map(({ b, w }) => ({ b, s: w * 0.85 }))
       .filter((x) => x.s > 0.12)
       .sort((x, y) => y.s - x.s);
+  }
+
+  // -------------------------------------------------------------------------
+  // v5.5：联想交汇 —— 连线交叉在记忆库中真正生成「微弱新想法」分支
+  //   两条联想连线在 3D 空间交汇 = 两条思维路径的交叉点。
+  //   交叉点并非装饰：在记忆库中创建一条真实的弱 insight 分支
+  //   （记录 4 个交汇记忆的关联），与 4 个源节点建立弱突触连接。
+  //   该分支可被检索、注入、演化、修剪 —— 真正进入记忆网络，成为「新想法」。
+  //   去重：同一 4 节点组合只强化不重复建；限频：默认 5 分钟一次检测。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 检测联想连线交汇并生成/强化「联想交汇」分支。
+   * 在检索命中后调用（思维活动的高潮期），fire-and-forget 不阻塞检索返回。
+   * @returns {Promise<{created:number, skipped?:string}>}
+   */
+  async crossLink(opts = {}) {
+    const nowMs = now();
+    const cooldown = Number(opts.cooldownMs) || 5 * 60000;
+    const lastCross = Number(this.getMeta("lastCrossAt", 0)) || 0;
+    if (nowMs - lastCross < cooldown) return { created: 0, skipped: "cooldown" };
+    const maxCreated = opts.maxCreated ?? 1;
+    let created = 0;
+    try {
+      const g = this.graphData(); // 复用 20s 缓存布局（含 x0/y0/z0）
+      const nodes = g.nodes.filter((n) => n.type === "leaf" || n.type === "core");
+      if (nodes.length < 4) return { created: 0, skipped: "nodes<4" };
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      // 边（仅两端都在节点表内的有效边）
+      const edges = [];
+      for (const e of g.edges) {
+        const a = byId.get(e.a), b = byId.get(e.b);
+        if (a && b) edges.push({ a, b, weight: e.weight });
+      }
+      if (edges.length < 2) return { created: 0, skipped: "edges<2" };
+      // 两两检测（限量，防大图 O(N²) 爆炸）
+      const CROSS_THRESHOLD = 0.11; // 球坐标单位：两条连线最近距离小于该值视为交汇
+      const maxPairs = 6000;
+      let pairs = 0;
+      for (let i = 0; i < edges.length && created < maxCreated; i++) {
+        for (let j = i + 1; j < edges.length && created < maxCreated; j++) {
+          if (++pairs > maxPairs) { pairs = maxPairs; break; }
+          const e1 = edges[i], e2 = edges[j];
+          // 共享端点不算交汇（那是同一个节点的分叉）
+          const s = new Set([e1.a.id, e1.b.id, e2.a.id, e2.b.id]);
+          if (s.size < 4) continue;
+          const d = segSegDist3(e1.a, e1.b, e2.a, e2.b);
+          if (d < CROSS_THRESHOLD) {
+            const made = await this.upsertCrossBranch(e1.a, e1.b, e2.a, e2.b, d);
+            created += made;
+          }
+        }
+        if (pairs >= maxPairs) break;
+      }
+    } catch { /* 交汇检测失败不影响主流程 */ }
+    if (created > 0) this.setMeta("lastCrossAt", nowMs);
+    return { created };
+  }
+
+  /**
+   * 创建/强化一条「联想交汇」分支（去重：同 4 节点组合只强化）。
+   * 返回 1=新建，0=已存在强化。
+   */
+  async upsertCrossBranch(n1, n2, n3, n4, dist) {
+    const key = [n1.id, n2.id, n3.id, n4.id].sort().join("|");
+    const ts = now();
+    // 去重：content 以 KEY: 开头的既有交汇分支中查找同组合
+    try {
+      const rows = this.db.prepare(
+        "SELECT * FROM branches WHERE status='active' AND title LIKE '⟡%' ORDER BY updated_at DESC LIMIT 300"
+      ).all().map((r) => this.rowToBranch(r));
+      const existing = rows.find((b) => String(b.content ?? "").startsWith("KEY:" + key));
+      if (existing) {
+        this.db.prepare("UPDATE branches SET strength=?, last_access_at=?, updated_at=? WHERE uid=?")
+          .run(clamp(existing.strength + 0.02, 0, 1), ts, ts, existing.id);
+        this.invalidateActiveCache();
+        return 0;
+      }
+    } catch { /* 查询失败则继续新建 */ }
+    const short = (t) => String(t ?? "").slice(0, 14);
+    const title = ("⟡ 联想交汇 · " + [n1.title, n2.title, n3.title, n4.title].map(short).join(" · ")).slice(0, 70);
+    const content = [
+      "KEY:" + key,
+      "两条思维路径在概念空间交汇（距离 " + Number(dist || 0).toFixed(2) + "），产生微弱新想法：",
+      "· " + short(n1.title) + " ↔ " + short(n2.title) + "（" + (KIND_LABELS[n1.kind] ?? "") + " / " + (KIND_LABELS[n2.kind] ?? "") + "）",
+      "· " + short(n3.title) + " ↔ " + short(n4.title) + "（" + (KIND_LABELS[n3.kind] ?? "") + " / " + (KIND_LABELS[n4.kind] ?? "") + "）",
+      "这两个关联可能在某个未被注意的维度上指向同一件事。"
+    ].join("\n");
+    try {
+      const out = await this.writeBranch({
+        title,
+        content,
+        kind: "insight",
+        tags: ["联想", "交汇", "自动"],
+        source: "system",
+        strength: 0.28,
+        sessionId: null
+      });
+      if (!out.dedup) {
+        // 与 4 个源节点建立弱突触连接（弱权重：仅作为潜在联想路径）
+        const branchId = out.branch.id;
+        for (const n of [n1, n2, n3, n4]) {
+          if (n.id !== branchId) this.setLink(branchId, n.id, 0.16);
+        }
+        this.setMeta("crossCreated", Number(this.getMeta("crossCreated", 0)) + 1);
+        this.invalidateActiveCache();
+        return 1;
+      }
+    } catch { /* 写入失败忽略 */ }
+    return 0;
   }
 
   // -------------------------------------------------------------------------
@@ -2094,10 +2238,10 @@ class HippocampusDb {
     };
 
     const nodes = [];
-    // 核心：球心附近小团簇（偏好/交流）
+    // 核心：球心附近小团簇（偏好/交流）—— v5.5 半径略增避免核心重叠
     cores.forEach((b, i) => {
       const d = sphereDir(i, Math.max(1, cores.length), 1.7);
-      const r = 0.08 + hash01("cr" + b.id) * 0.06;
+      const r = 0.09 + hash01("cr" + b.id) * 0.08;
       nodes.push({
         id: b.id, uid: b.id, title: b.title, kind: b.kind, strength: b.strength, status: b.status,
         type: "core", ring: 0, activation: b.strength,
@@ -2120,23 +2264,53 @@ class HippocampusDb {
       });
     });
     // 衍生记忆：外球面，按所属工作区方向扇区扩散
+    // v5.5：同一扇区内的叶子做「二次均匀散布」（局部 Fibonacci 球面），
+    // 替代 hash 随机抖动 —— 避免节点堆叠/距离过近；半径范围扩大拉开层次
     const wdirDirMap = new Map(wdirDirs.map(({ w, d }) => [w.path, d]));
-    leaves.forEach((b, i) => {
+    const cross = (a, b) => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+    const axisOf = (d) => (Math.abs(d.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 });
+    // 按扇区收集叶子（无工作区 → __global__）
+    const bySector = new Map();
+    for (const b of leaves) {
       const wd = b.scopePath ?? null;
-      const baseDir = wd && wdirDirMap.has(wd) ? wdirDirMap.get(wd) : sphereDir(i, Math.max(1, leaves.length), 3.3);
-      const jitter = norm({
-        x: baseDir.x * 0.72 + (hash01("jx" + b.id) - 0.5) * 0.9,
-        y: baseDir.y * 0.72 + (hash01("jy" + b.id) - 0.5) * 0.9,
-        z: baseDir.z * 0.72 + (hash01("jz" + b.id) - 0.5) * 0.9
-      });
-      const r = 0.78 + hash01("lr" + b.id) * 0.2;
+      const key = wd && wdirDirMap.has(wd) ? wd : "__global__";
+      if (!bySector.has(key)) bySector.set(key, []);
+      bySector.get(key).push(b);
+    }
+    const pushLeaf = (b, d, r) => {
       nodes.push({
         id: b.id, uid: b.id, title: b.title, kind: b.kind, strength: b.strength, status: b.status,
-        type: "leaf", ring: 2, workdir: wd, activation: b.strength,
+        type: "leaf", ring: 2, workdir: b.scopePath ?? null, activation: b.strength,
         ageDays: Math.max(0, (now() - (b.createdAt || now())) / DAY_MS),
-        x0: jitter.x * r, y0: jitter.y * r, z0: jitter.z * r
+        x0: d.x * r, y0: d.y * r, z0: d.z * r
       });
+    };
+    // 全局叶子（无工作区）：球面 Fibonacci 均匀散布
+    const globalLeaves = bySector.get("__global__") ?? [];
+    globalLeaves.forEach((b, i) => {
+      const d = sphereDir(i, Math.max(1, globalLeaves.length), 3.3);
+      pushLeaf(b, d, 0.82 + hash01("lr" + b.id) * 0.26);
     });
+    // 每个工作区扇区：以扇区中心方向为轴，扇区内做局部 Fibonacci 二次均匀散布
+    for (const [wd, list] of bySector) {
+      if (wd === "__global__") continue;
+      const baseDir = wdirDirMap.get(wd);
+      const u = norm(cross(baseDir, axisOf(baseDir)));
+      const v = norm(cross(baseDir, u));
+      const sectorSeed = hash01("so" + wd) * 6.283;
+      list.forEach((b, i) => {
+        const y = 1 - (i / Math.max(1, list.length - 1)) * 2; // -1..1
+        const rr = Math.sqrt(Math.max(0, 1 - y * y));
+        const theta = (i + 0.5) * 2.399963229728653 + sectorSeed;
+        const spread = Math.sin(0.55) * rr; // 扇区锥半角 0.55
+        const dir = norm({
+          x: baseDir.x + (u.x * Math.cos(theta) + v.x * Math.sin(theta)) * spread,
+          y: baseDir.y + (u.y * Math.cos(theta) + v.y * Math.sin(theta)) * spread,
+          z: baseDir.z + (u.z * Math.cos(theta) + v.z * Math.sin(theta)) * spread
+        });
+        pushLeaf(b, dir, 0.84 + hash01("lr" + b.id) * 0.28);
+      });
+    }
 
     // 边：持久化突触（含核心↔工作区永久连接、衍生↔工作区连接、记忆间连接）
     const edgeMap = new Map();
@@ -3866,4 +4040,4 @@ export function apply(ctx) {
 }
 
 // 供独立测试 / 编程使用
-export { HippocampusDb, HippocampusService, HippocampusDbFactory, ActivityRegistry, AnchorBank, distillTrajectory };
+export { HippocampusDb, HippocampusService, HippocampusDbFactory, ActivityRegistry, AnchorBank, segSegDist3, distillTrajectory };

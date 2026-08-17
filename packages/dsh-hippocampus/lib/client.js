@@ -894,6 +894,16 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
+		// v5.5 联想交汇节点标识：标题带 ⟡ 的记忆是「连线交叉产生的真实微弱新想法」
+		// （记忆库中的 insight 分支，可检索/注入/演化/修剪 —— 数据驱动而非装饰）
+		if (node.title && node.title.startsWith("⟡") && !highlighted && !anchorSet?.has(node.id)) {
+			const tw = ctx.measureText("⟡").width;
+			ctx.shadowBlur = 0;
+			ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+			ctx.fillStyle = "rgba(186,104,200," + (0.55 + node.energy * 0.35).toFixed(2) + ")";
+			ctx.fillText("⟡", p.sx - tw / 2, p.sy - r - 6);
+			ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+		}
 	}
 }
 
@@ -1158,7 +1168,14 @@ function buildSim(graph, prev) {
 			y: old?.y ?? node.y0 ?? 0,
 			z: old?.z ?? node.z0 ?? 0,
 			phase: hashOf("ph" + node.id) * Math.PI * 2,
-			r: 5 + node.strength * 8.5,
+			// v5.5 节点大小分层：综合 强度 + 连接度 + 层级 —— 重要节点显著更大，
+			// 分支/弱记忆明显更小，一眼分辨「中枢/分支」
+			//   rStrength: 强度 0.55~1.30（越牢固越大）
+			//   rDegree:   连接度 1 + log2(1+degree)*0.16（中枢节点更大，最多 ~2.4×）
+			//   rLayer:    核心 1.30 / 工作区 1.18 / 衍生 0.78 / 其它 1.0
+			r: 5 * (0.55 + (node.strength ?? 0.5) * 0.75)
+				* (1 + Math.log2(1 + (node.degree ?? 0)) * 0.16)
+				* (node.type === "core" ? 1.30 : node.type === "workdir" ? 1.18 : node.type === "leaf" ? 0.78 : 1.0),
 			// 节点初始能量 = 真实激活强度（而非随机值），画布亮度/光晕始终反映真实 strength
 			energy: old?.energy ?? node.activation ?? node.strength ?? 0,
 			// v5.2：能量基线 = 真实强度 —— 非搜索态能量收敛回基线，不再衰减到全黑
