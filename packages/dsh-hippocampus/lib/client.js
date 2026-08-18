@@ -525,9 +525,68 @@ exports.KINDS = KINDS;
 exports.REASONS = REASONS;
       },
       "draw.js": function (module, exports, require) {
-// 3D 渲染：以「视觉修正」为目标 —— 深度越远越小越暗、球体体积感、层级轨道。
-// 不做经纬线网格 / 地面投影 / 子午线等装饰性 3D 动效，避免线条杂乱。
+// 3D 渲染：深度透视 + 球体体积感 + 层级轨道。
+// v5.6：主题自适应（浅/深色）+ 旋转参照（轨道卫星点/增强网格）+ 方位罗盘（镜头朝向）。
 const { rotate3, lexScore } = require("./sim.js");
+
+// —— v5.6 主题调色板：从 DSH CSS 变量读取背景色，自动适配浅色/深色主题 ——
+const DARK_PALETTE = {
+	dark: true,
+	bgTop: "#0b1220", bgBottom: "#060a12",
+	grid: "rgba(90,110,160,0.05)",
+	floor: "rgba(130,165,220,0.16)",
+	floorDot: "rgba(130,165,220,0.30)",
+	shell: ["rgba(150,190,255,0.34)", "rgba(255,206,130,0.28)", "rgba(200,170,255,0.24)"],
+	shellSat: ["rgba(170,205,255,0.75)", "rgba(255,220,150,0.7)", "rgba(215,185,255,0.65)"],
+	layerText: "rgba(150,180,230,0.62)",
+	labelBg: "rgba(6,10,18,0.88)", labelText: "#ffffff",
+	hitRing: "rgba(255,255,255,0.8)",
+	selRing: "rgba(255,255,255,0.98)",
+	hoverRing: "rgba(255,255,255,0.35)",
+	compassBg: "rgba(6,10,18,0.72)", compassText: "#cfe0ff",
+	axisX: "#ff6b6b", axisY: "#69db7c", axisZ: "#74c0fc"
+};
+const LIGHT_PALETTE = {
+	dark: false,
+	bgTop: "#eef2f8", bgBottom: "#dde4ef",
+	grid: "rgba(60,80,120,0.12)",
+	floor: "rgba(70,100,160,0.30)",
+	floorDot: "rgba(70,100,160,0.55)",
+	shell: ["rgba(80,110,180,0.36)", "rgba(190,140,70,0.32)", "rgba(140,100,190,0.28)"],
+	shellSat: ["rgba(60,90,160,0.85)", "rgba(170,120,50,0.8)", "rgba(120,80,170,0.75)"],
+	layerText: "rgba(70,95,150,0.75)",
+	labelBg: "rgba(255,255,255,0.92)", labelText: "#16202e",
+	hitRing: "rgba(30,60,100,0.85)",
+	selRing: "rgba(20,40,80,0.95)",
+	hoverRing: "rgba(60,90,150,0.6)",
+	compassBg: "rgba(255,255,255,0.85)", compassText: "#3a4a68",
+	axisX: "#e05b5b", axisY: "#3da35d", axisZ: "#3a7fc9"
+};
+
+let _themeCache = { at: 0, p: null };
+function luminanceOf(hex) {
+	try {
+		const n = parseInt(hex.slice(1), 16);
+		const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+		return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+	} catch { return 0; }
+}
+/** 读取当前主题调色板（2s 缓存；首次/主题切换后自动刷新） */
+function themePalette() {
+	const nowMs = Date.now();
+	if (_themeCache.p && nowMs - _themeCache.at < 2000) return _themeCache.p;
+	let p = DARK_PALETTE;
+	try {
+		if (typeof document !== "undefined") {
+			const cs = getComputedStyle(document.documentElement);
+			const read = (n, fb) => { const v = cs.getPropertyValue(n).trim(); return v && v.startsWith("#") ? v : fb; };
+			const bgBase = read("--dsw-alias-bg-base", "#0b1018");
+			if (luminanceOf(bgBase) >= 0.5) p = LIGHT_PALETTE;
+		}
+	} catch { /* 读取失败保持深色 */ }
+	_themeCache = { at: nowMs, p };
+	return p;
+}
 
 // 边连接含义：颜色 = 原因（图例 / 连线着色 / 标注共用）
 function edgeReason(a, b) {
@@ -566,12 +625,89 @@ function distToSeg(px, py, x1, y1, x2, y2) {
 	return Math.hypot(px - (x1 + tt * dx), py - (y1 + tt * dy));
 }
 
+/** 画一条 3D 空间中的环（绕 Y 轴圆环经投影），并返回环上各标记点 */
+function traceRing(ctx, r, rotX, rotY, scale, fov, cx, cy, n = 60) {
+	const pts = [];
+	ctx.beginPath();
+	for (let i = 0; i <= n; i++) {
+		const th = (i / n) * Math.PI * 2;
+		const p = rotate3(Math.cos(th) * r, 0, Math.sin(th) * r, rotX, rotY);
+		const k = scale / (fov + p.z);
+		const sx = cx + p.x * k, sy = cy - p.y * k;
+		if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+		pts.push({ sx, sy, depth: fov + p.z, th });
+	}
+	ctx.stroke();
+	return pts;
+}
+
+/**
+ * v5.6 方位罗盘：右下角小型 3D 坐标轴指示器 —— 随时知道镜头朝向。
+ * X=红(右) Y=绿(上) Z=蓝(前)；蓝点即「镜头正对方向」，拖拽时跟随旋转。
+ */
+function drawCompass(ctx, w, h, rotX, rotY, p) {
+	const cxp = w - 46, cyp = h - 44, R = 17;
+	ctx.save();
+	ctx.globalAlpha = 0.9;
+	// 底盘
+	ctx.fillStyle = p.compassBg;
+	ctx.beginPath();
+	ctx.arc(cxp, cyp, R + 7, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.strokeStyle = p.dark ? "rgba(120,150,210,0.4)" : "rgba(70,100,160,0.4)";
+	ctx.lineWidth = 1;
+	ctx.stroke();
+	// 坐标轴（与主视图同旋转）
+	const axes = [
+		{ v: rotate3(1, 0, 0, rotX, rotY), color: p.axisX, label: "X" },
+		{ v: rotate3(0, 1, 0, rotX, rotY), color: p.axisY, label: "Y" },
+		{ v: rotate3(0, 0, 1, rotX, rotY), color: p.axisZ, label: "Z" }
+	];
+	for (const a of axes) {
+		ctx.globalAlpha = 0.95;
+		ctx.strokeStyle = a.color;
+		ctx.lineWidth = 1.6;
+		ctx.beginPath();
+		ctx.moveTo(cxp, cyp);
+		ctx.lineTo(cxp + a.v.x * R, cyp - a.v.y * R);
+		ctx.stroke();
+	}
+	// 前向标记（Z+ 蓝点 = 镜头正对方向）
+	const f = rotate3(0, 0, 1, rotX, rotY);
+	ctx.globalAlpha = 1;
+	ctx.fillStyle = p.axisZ;
+	ctx.beginPath();
+	ctx.arc(cxp + f.x * R, cyp - f.y * R, 3, 0, Math.PI * 2);
+	ctx.fill();
+	ctx.strokeStyle = p.dark ? "#0b1220" : "#ffffff";
+	ctx.lineWidth = 1;
+	ctx.stroke();
+	// 中心点
+	ctx.fillStyle = p.compassText;
+	ctx.beginPath();
+	ctx.arc(cxp, cyp, 2.2, 0, Math.PI * 2);
+	ctx.fill();
+	// 方位文本（前/后/上/下 的当前朝向）
+	const front = Math.round((((rotY % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 2));
+	const faces = ["前", "右", "后", "左"];
+	const face = faces[front % 4];
+	const pitch = rotX > 0.35 ? "下" : rotX < -0.35 ? "上" : "平视";
+	ctx.globalAlpha = 0.95;
+	ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+	ctx.textAlign = "center";
+	ctx.fillStyle = p.compassText;
+	ctx.fillText(face + "·" + pitch, cxp, cyp + R + 14);
+	ctx.textAlign = "left";
+	ctx.restore();
+}
+
 // 3D 球形渲染 —— 旋转 + 透视投影 + 深度排序 + 背面衰减
 // v5.4：draw 增加 anchors 参数（激活锚点集合 → 金色锚环 + 呼吸脉冲可视化工作记忆）
 function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 	if (!canvas || size.w === 0) return;
 	const ctx = canvas.getContext("2d");
 	if (!ctx) return;
+	const P = themePalette(); // v5.6 主题调色板
 	const anchorSet = anchors && anchors.size ? anchors : null;
 	const dpr = Math.min(2, window.devicePixelRatio || 1);
 	const w = size.w;
@@ -581,14 +717,14 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 	const zoom = view.zoom || 1;
 	const dragging = view.dragging ?? false;
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-	// 背景
+	// 背景（主题自适应：浅色主题 → 浅色渐变背景）
 	const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75);
-	bg.addColorStop(0, "#0b1220");
-	bg.addColorStop(1, "#060a12");
+	bg.addColorStop(0, P.bgTop);
+	bg.addColorStop(1, P.bgBottom);
 	ctx.fillStyle = bg;
 	ctx.fillRect(0, 0, w, h);
-	// 点阵网格（v5.3：弱化，仅作星空背景底）
-	ctx.fillStyle = "rgba(90,110,160,0.05)";
+	// 点阵星空（主题化）
+	ctx.fillStyle = P.grid;
 	for (let gx = 18; gx < w; gx += 18) {
 		for (let gy = 18; gy < h; gy += 18) ctx.fillRect(gx, gy, 1, 1);
 	}
@@ -638,55 +774,65 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 	// 背面衰减（z 深入背面时变暗变小）—— 立体感的「视觉修正」核心
 	const faceA = (p) => Math.max(0.16, Math.min(1, 1.55 - p.depth / fov));
 
-	// —— 层级轨道：三层壳（核心/工作区/衍生）赤道环，保留层级语义 ——
-	// v5.3：轨道透明度整体调低，作为「背景参照」而非视觉主体
+	// —— 层级轨道：三层壳赤道环 ——
+	// v5.6：轨道环上带「卫星标记点」—— 环随球体旋转时标记点明显移动，
+	// 让「球在转」可感知（解决主体变化不明显/看不出在动的问题）
 	const SHELLS = [
-		{ r: 0.08, label: "核心 · 中枢", color: "rgba(150,190,255,0.26)" },
-		{ r: 0.34, label: "工作区 · 项目", color: "rgba(255,206,130,0.22)" },
-		{ r: 0.78, label: "衍生 · 记忆", color: "rgba(200,170,255,0.18)" }
+		{ r: 0.08, label: "核心 · 中枢" },
+		{ r: 0.34, label: "工作区 · 项目" },
+		{ r: 0.78, label: "衍生 · 记忆" }
 	];
 	ctx.lineWidth = 1;
-	for (const sh of SHELLS) {
-		ctx.strokeStyle = sh.color;
-		ctx.beginPath();
-		for (let i = 0; i <= 60; i++) {
-			const th = (i / 60) * Math.PI * 2;
-			const p = rotate3(Math.cos(th) * sh.r, 0, Math.sin(th) * sh.r, rotX, rotY);
-			const k = scale / (fov + p.z);
-			const sx = cx + p.x * k, sy = cy - p.y * k;
-			if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+	SHELLS.forEach((sh, idx) => {
+		ctx.strokeStyle = P.shell[idx];
+		const ringPts = traceRing(ctx, sh.r, rotX, rotY, scale, fov, cx, cy);
+		// 卫星标记点：环上 3 个均匀分布的点，随旋转移动（方位参照）
+		ctx.fillStyle = P.shellSat[idx];
+		for (const mk of [0.33, 0.66, 0.99]) {
+			const m = ringPts[Math.floor(mk * (ringPts.length - 1))];
+			if (!m || m.depth < 0.25) continue; // 背面的标记点不画（避免视觉歧义）
+			const sz = idx === 0 ? 2 : 2.5;
+			ctx.beginPath();
+			ctx.arc(m.sx, m.sy, sz, 0, Math.PI * 2);
+			ctx.fill();
 		}
-		ctx.stroke();
-	}
-	// 层标签（左上角固定，可读且不随旋转漂移）
+	});
+	// 层标签（左上角固定，主题化）
 	ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
 	ctx.textBaseline = "top";
 	SHELLS.forEach((sh, i) => {
 		const ly = 30 + i * 18;
-		ctx.fillStyle = "rgba(6,10,18,0.78)";
+		ctx.fillStyle = P.labelBg;
 		ctx.fillRect(10, ly - 1, 142, 17);
-		ctx.fillStyle = sh.color;
+		ctx.fillStyle = P.shell[i];
 		ctx.fillText(sh.label, 15, ly);
 	});
 	ctx.textBaseline = "alphabetic";
 
-	// —— 透视地平线网格（y=-1.55 平面，随球体旋转）—— 弱化处理，仅提供纵深感 ——
+	// —— 透视地平线网格（y=-1.55 平面，随球体旋转）—— v5.6 增强：透明度提升 + 交点小点 ——
 	const FLOOR_Y = -1.55, FLOOR_HALF = 2.2, GRID_N = 6;
 	const proj3 = (v) => { const dd = fov + v.z; if (dd < 0.25) return null; return { x: cx + v.x * (scale / dd), y: cy - v.y * (scale / dd) }; };
 	ctx.lineWidth = 1;
+	ctx.strokeStyle = P.floor;
 	for (let i = 0; i <= GRID_N; i++) {
 		const t = -1 + (2 * i) / GRID_N;
 		const p1 = proj3(rotate3(t * FLOOR_HALF, FLOOR_Y, -FLOOR_HALF, rotX, rotY));
 		const p2 = proj3(rotate3(t * FLOOR_HALF, FLOOR_Y, FLOOR_HALF, rotX, rotY));
 		const p3 = proj3(rotate3(-FLOOR_HALF, FLOOR_Y, t * FLOOR_HALF, rotX, rotY));
 		const p4 = proj3(rotate3(FLOOR_HALF, FLOOR_Y, t * FLOOR_HALF, rotX, rotY));
-		ctx.strokeStyle = "rgba(130,165,220,0.09)";
 		if (p1 && p2) { ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); }
 		if (p3 && p4) { ctx.beginPath(); ctx.moveTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.stroke(); }
 	}
+	// 网格交点小点（v5.6：让网格运动更可感知）
+	ctx.fillStyle = P.floorDot;
+	for (let i = 0; i <= GRID_N; i += 2) {
+		for (let j = 0; j <= GRID_N; j += 2) {
+			const pv = proj3(rotate3(-1 + (2 * i) / GRID_N * FLOOR_HALF, FLOOR_Y, -1 + (2 * j) / GRID_N * FLOOR_HALF, rotX, rotY));
+			if (pv) { ctx.fillRect(pv.x - 1, pv.y - 1, 2, 2); }
+		}
+	}
 
 	// —— 连接（真实突触权重；按连接原因着色；悬停/选中边标注原因+权重）——
-	// 悬停检测：鼠标距离线段最近者
 	let hoverEdge = null;
 	if (sim.mouse && sim.mouse.inside && !dragging) {
 		let bd = 9;
@@ -711,10 +857,7 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 		const reason = edgeReason(pa.node, pb.node);
 		const isHoverEdge = hoverEdge === e;
 		const isFocusEdge = isHoverEdge || (selectedId && highlightedEdgeSet.has(e.a + "|" + e.b));
-		// 聚焦/悬停边高亮（加粗 + 白 + 原因色发光）；普通边按原因着色
-		// v5.3：普通边整体压暗（alpha 0.06+0.20×w、线宽 0.4+0.8×w），减少交叉杂乱；
-		// 视觉焦点从「线」转移到「节点/选中关系」，仅聚焦/悬停边提亮
-		const lwScale = Math.min(2.2, Math.max(0.6, zoom)); // v5.2：线宽随缩放轻微变化
+		const lwScale = Math.min(2.2, Math.max(0.6, zoom));
 		if (isFocusEdge) {
 			ctx.strokeStyle = "rgba(255,255,255," + Math.min(0.96, (0.6 + e.weight * 0.4) * back).toFixed(3) + ")";
 			ctx.lineWidth = (1.8 + e.weight * 2.2) * lwScale;
@@ -744,7 +887,7 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.arc(cx + r3i.x * ki, cy - r3i.y * ki, 1.6 + sig.weight * 1.6, 0, Math.PI * 2);
 			ctx.fill();
 		}
-		// 连接原因标注：悬停的边、或选中节点的相连边（标注「原因 · 权重」）
+		// 连接原因标注（主题化标签底）
 		if (isFocusEdge) {
 			const mx = (pa.sx + pb.sx) / 2;
 			const my = (pa.sy + pb.sy) / 2;
@@ -753,7 +896,7 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			const tw = ctx.measureText(label).width;
 			const bx = Math.min(w - tw - 10, Math.max(6, mx - tw / 2));
 			const byy = Math.max(18, my - 8);
-			ctx.fillStyle = "rgba(6,10,18,0.88)";
+			ctx.fillStyle = P.labelBg;
 			ctx.beginPath();
 			ctx.roundRect ? ctx.roundRect(bx - 5, byy - 13, tw + 10, 18, 4) : ctx.rect(bx - 5, byy - 13, tw + 10, 18);
 			ctx.fill();
@@ -767,15 +910,9 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 		const node = p.node;
 		const d = dimWithSelection(node);
 		const back = faceA(p);
-		// v5.2 修复：节点半径必须随 zoom 缩放（此前 base=fov/depth 不含 zoom，
-		// 放大时节点位置散开但大小不变 —— 三维感缺失、视觉像贴图）。
-		// 正确投影：屏幕半径 = 世界半径 × scale/depth = r × fov/depth × zoom
 		const base = (p.k / (scale / fov)) * zoom;
-		// 层级区分：核心更大、衍生略小，配合轨道显示层级
-		const sizeK = node.type === "core" ? 1.3 : node.type === "leaf" ? 0.85 : 1;
-		const r = Math.max(1.5, node.r * base * sizeK);
-		// 选中/关联节点发光更强，普通节点弱发光，避免光晕杂乱
-		// v5.3：普通节点光晕减半（3+9e → 1.5+4e），降低整体「过曝感」
+		// v5.5：节点半径已在 sim 端按 强度×连接度×层级 综合计算，此处不再重复放大
+		const r = Math.max(1.5, node.r * base);
 		const highlighted = isHighlighted(node.id);
 		const isSelected = node.id === selectedId;
 		const glow = isSelected ? 12 + node.energy * 14
@@ -824,11 +961,11 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.fill();
 		}
 		ctx.globalAlpha = 1;
-		// 搜索命中环（真实检索命中的节点才有环）
+		// 搜索命中环（主题化）
 		const isHit = sr ? sr.hits.has(node.id) : !!(q && lexScore(node, q) > 0);
 		if (isHit && !highlighted) {
 			ctx.shadowBlur = 0;
-			ctx.strokeStyle = "rgba(255,255,255," + (0.8 * back).toFixed(2) + ")";
+			ctx.strokeStyle = P.hitRing;
 			ctx.lineWidth = 1.1;
 			ctx.setLineDash([3, 3]);
 			ctx.beginPath();
@@ -836,11 +973,11 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
-		// 选中/关联节点高亮环（实心白环 + 外发光）
+		// 选中/关联节点高亮环（主题化）
 		if (highlighted) {
 			ctx.shadowBlur = 0;
 			ctx.strokeStyle = isSelected
-				? "rgba(255,255,255," + (0.98 * back).toFixed(2) + ")"
+				? P.selRing
 				: "rgba(170,220,255," + (0.85 * back).toFixed(2) + ")";
 			ctx.lineWidth = isSelected ? 2.4 : 1.6;
 			ctx.beginPath();
@@ -856,27 +993,26 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			}
 		}
 		ctx.shadowBlur = 0;
-		// 标签：仅聚焦（选中）节点显示名称并放大；其它节点一律不显示名称
+		// 标签：仅聚焦（选中）节点显示名称并放大（主题化标签底）
 		if (isSelected) {
 			ctx.font = "bold 16px ui-sans-serif, system-ui, sans-serif";
 			const tw = ctx.measureText(node.title).width;
 			const tx = Math.min(w - tw - 6, Math.max(6, p.sx - tw / 2));
 			const ty = Math.max(18, p.sy - r - 15);
-			ctx.fillStyle = "rgba(6,10,18,0.88)";
+			ctx.fillStyle = P.labelBg;
 			ctx.fillRect(tx - 6, ty - 14, tw + 12, 20);
-			ctx.fillStyle = "#ffffff";
+			ctx.fillStyle = P.labelText;
 			ctx.fillText(node.title, tx, ty);
 		} else if (node.id === sim.hover && !highlighted) {
-			// 悬停反馈：仅细光环，不显示名称
+			// 悬停反馈：仅细光环（主题化）
 			ctx.shadowBlur = 0;
-			ctx.strokeStyle = "rgba(255,255,255," + (0.35 * back).toFixed(2) + ")";
+			ctx.strokeStyle = P.hoverRing;
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.arc(p.sx, p.sy, r + 2, 0, Math.PI * 2);
 			ctx.stroke();
 		}
-		// v5.4 激活锚点：金色锚环 + 呼吸脉冲 —— 可视化「当前工作记忆中激活的记忆」
-		// （仅未被选中/高亮环覆盖时显示，避免视觉叠加）
+		// v5.4 激活锚点：金色锚环 + 呼吸脉冲
 		if (anchorSet && anchorSet.has(node.id) && !highlighted) {
 			const breath = 0.5 + 0.5 * Math.sin(sim.t * 0.05 + (hash01(node.id) * 6.28));
 			const ar = r + 7 + breath * 2;
@@ -886,7 +1022,6 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.beginPath();
 			ctx.arc(p.sx, p.sy, ar, 0, Math.PI * 2);
 			ctx.stroke();
-			// 内圈细点环（锚定感）
 			ctx.strokeStyle = "rgba(255,212,121," + (0.16 + breath * 0.2).toFixed(2) + ")";
 			ctx.setLineDash([2, 3]);
 			ctx.beginPath();
@@ -894,8 +1029,7 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.stroke();
 			ctx.setLineDash([]);
 		}
-		// v5.5 联想交汇节点标识：标题带 ⟡ 的记忆是「连线交叉产生的真实微弱新想法」
-		// （记忆库中的 insight 分支，可检索/注入/演化/修剪 —— 数据驱动而非装饰）
+		// v5.5 联想交汇节点标识：紫色星标
 		if (node.title && node.title.startsWith("⟡") && !highlighted && !anchorSet?.has(node.id)) {
 			const tw = ctx.measureText("⟡").width;
 			ctx.shadowBlur = 0;
@@ -905,6 +1039,9 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 			ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
 		}
 	}
+
+	// v5.6 方位罗盘：右下角，随时知道镜头朝向（前/后/左/右 + 上/下/平视）
+	drawCompass(ctx, w, h, rotX, rotY, P);
 }
 
 // 字符串哈希（锚点呼吸相位用，与 sim.js 同构）
@@ -1246,10 +1383,10 @@ const css = `
 .hp-btn-primary{border-color:#3d6df2;color:#8ab4ff;background:#1f3a8a33}
 .hp-btn-danger{color:#ff7b72}
 .hp-body{display:flex;gap:10px;flex:1;min-height:0}
-.hp-canvas-wrap{flex:1;min-width:280px;position:relative;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:12px;overflow:hidden;background:#070b12}
+.hp-canvas-wrap{flex:1;min-width:280px;position:relative;border:1px solid var(--dsw-alias-border-l2,#232b3a);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-base,#070b12)}
 .hp-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
-.hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:11px;color:#8b96a5;pointer-events:none;user-select:none;font-family:ui-sans-serif,system-ui,sans-serif}
-.hp-empty-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#5b6472;font-size:12px;pointer-events:none;text-align:center;padding:0 30px}
+.hp-hints{position:absolute;left:10px;bottom:8px;display:flex;gap:12px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8b96a5);pointer-events:none;user-select:none;font-family:ui-sans-serif,system-ui,sans-serif}
+.hp-empty-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--dsw-alias-label-tertiary,#5b6472);font-size:12px;pointer-events:none;text-align:center;padding:0 30px}
 .hp-list{width:min(400px,42%);flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px}
 /* v5.3：分类抽屉盒（按种类分组） */
 .hp-group-head{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:8px;cursor:pointer;user-select:none;background:transparent;transition:background .12s}
@@ -1339,8 +1476,8 @@ const css = `
 .hp-tut-item b{color:#8ab4ff;font-weight:700}
 .hp-tut-k{color:#81c784}
 .hp-tut-e{color:#ba68c8}
-.hp-statusbar{position:absolute;left:0;right:0;bottom:0;height:28px;display:flex;align-items:center;gap:14px;padding:0 12px;background:rgba(6,10,18,.85);backdrop-filter:blur(3px);border-top:1px solid #1c2432;font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;color:#9aa4b2;pointer-events:none;z-index:3;overflow:hidden;white-space:nowrap}
-.hp-statusbar b{color:#e6f1ff;font-weight:600}
+.hp-statusbar{position:absolute;left:0;right:0;bottom:0;height:28px;display:flex;align-items:center;gap:14px;padding:0 12px;background:color-mix(in srgb, var(--dsw-alias-bg-elevated,#0e1420) 88%, transparent);backdrop-filter:blur(3px);border-top:1px solid var(--dsw-alias-border-l2,#1c2432);font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa4b2);pointer-events:none;z-index:3;overflow:hidden;white-space:nowrap}
+.hp-statusbar b{color:var(--dsw-alias-label-primary,#e6f1ff);font-weight:600}
 .hp-statusbar .hp-sel{display:flex;gap:14px;min-width:0;overflow:hidden}
 .hp-statusbar .hp-sel span{overflow:hidden;text-overflow:ellipsis}
 .hp-status-right{margin-left:auto;display:flex;gap:14px;color:#7d8590;flex:none}
