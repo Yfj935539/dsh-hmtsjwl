@@ -395,18 +395,48 @@ function draw(canvas, sim, selectedId, size, searchQuery, view, anchors) {
 		ctx.shadowBlur = glow;
 		ctx.globalAlpha = (0.55 + node.strength * 0.45) * d * back;
 		if (node.type === "workdir") {
-			// 工作区目录：方形节点（文件夹），线性渐变 + 描边
-			const s = r * 1.5;
-			const lg = ctx.createLinearGradient(p.sx - s, p.sy - s, p.sx + s, p.sy + s);
-			lg.addColorStop(0, shade(node.color, 70));
-			lg.addColorStop(1, shade(node.color, -50));
-			ctx.fillStyle = lg;
+			// v5.7 工作区目录：真正 3D 立方体 —— 8 顶点旋转投影 + 面深度排序 + 明暗面，
+			// 旋转时有体积感（此前是 2D 扁平圆角矩形，看起来像贴图）
+			ctx.globalAlpha = 1; // 面的透明度由 hexA 控制（避免与 globalAlpha 双重叠加）
+			const hs = (r / Math.max(1e-6, p.k)) * 0.95; // 世界半边长（把屏幕半径换算回世界单位）
+			const V = [
+				[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+				[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+			];
+			const corners = [];
+			for (const [sx, sy, sz] of V) {
+				const wv = rotate3(node.x + sx * hs, node.y + sy * hs, node.z + sz * hs, rotX, rotY);
+				const dd = fov + wv.z;
+				const kk = scale / dd;
+				corners.push({ x: cx + wv.x * kk, y: cy - wv.y * kk, depth: dd });
+			}
+			const faces = [
+				{ idx: [0, 1, 2, 3], c: shade(node.color, 60) },   // z- 主面
+				{ idx: [4, 7, 6, 5], c: shade(node.color, -20) },  // z+ 背面
+				{ idx: [0, 1, 5, 4], c: shade(node.color, -50) },  // y- 底面
+				{ idx: [3, 2, 6, 7], c: shade(node.color, 30) },   // y+ 顶面
+				{ idx: [0, 3, 7, 4], c: shade(node.color, -60) },  // x- 左面
+				{ idx: [1, 2, 6, 5], c: shade(node.color, 10) }    // x+ 右面
+			];
+			faces.forEach((f) => { f.depth = f.idx.reduce((s, vi) => s + corners[vi].depth, 0) / 4; });
+			faces.sort((a, b) => a.depth - b.depth); // 画家算法：远 → 近
+			for (const f of faces) {
+				ctx.fillStyle = hexA(f.c, 0.88 * back);
+				ctx.beginPath();
+				f.idx.forEach((vi, i) => { i ? ctx.lineTo(corners[vi].x, corners[vi].y) : ctx.moveTo(corners[vi].x, corners[vi].y); });
+				ctx.closePath();
+				ctx.fill();
+				ctx.strokeStyle = "rgba(255,255,255," + (0.14 * back).toFixed(2) + ")";
+				ctx.lineWidth = 0.7;
+				ctx.stroke();
+			}
+			// 顶面高光角点（增强体积感）
+			const topIdx = [3, 2, 6, 7];
+			ctx.fillStyle = "rgba(255,255,255," + (0.18 * back).toFixed(2) + ")";
 			ctx.beginPath();
-			ctx.roundRect ? ctx.roundRect(p.sx - s, p.sy - s, s * 2, s * 2, 4) : ctx.rect(p.sx - s, p.sy - s, s * 2, s * 2);
+			topIdx.forEach((vi, i) => { i ? ctx.lineTo(corners[vi].x, corners[vi].y) : ctx.moveTo(corners[vi].x, corners[vi].y); });
+			ctx.closePath();
 			ctx.fill();
-			ctx.strokeStyle = "rgba(255,255,255," + (0.18 * back).toFixed(2) + ")";
-			ctx.lineWidth = 1;
-			ctx.stroke();
 		} else {
 			// 球体体积感：径向渐变（左上亮 / 右下暗）+ 单一玻璃高光 + 边缘暗环
 			const rg = ctx.createRadialGradient(p.sx - r * 0.4, p.sy - r * 0.45, r * 0.1, p.sx, p.sy, r * 1.05);

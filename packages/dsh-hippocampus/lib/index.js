@@ -2241,7 +2241,8 @@ class HippocampusDb {
     // 核心：球心附近小团簇（偏好/交流）—— v5.5 半径略增避免核心重叠
     cores.forEach((b, i) => {
       const d = sphereDir(i, Math.max(1, cores.length), 1.7);
-      const r = 0.09 + hash01("cr" + b.id) * 0.08;
+      // v5.7 核心布局半径扩大，避免互相挤占/与工作区环重叠
+      const r = 0.13 + hash01("cr" + b.id) * 0.10;
       nodes.push({
         id: b.id, uid: b.id, title: b.title, kind: b.kind, strength: b.strength, status: b.status,
         type: "core", ring: 0, activation: b.strength,
@@ -2255,7 +2256,8 @@ class HippocampusDb {
       return { w, d };
     });
     wdirDirs.forEach(({ w, d }, i) => {
-      const r = 0.34 + hash01("wr" + w.path) * 0.08;
+      // v5.7 工作区环稍外移，与核心簇拉开间距
+      const r = 0.38 + hash01("wr" + w.path) * 0.07;
       nodes.push({
         id: this.workdirId(w.path), uid: this.workdirId(w.path), title: "📁 " + (w.name ?? w.path),
         kind: "workdir", strength: 0.85, status: "active", workdir: w.path,

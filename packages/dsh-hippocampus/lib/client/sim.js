@@ -28,14 +28,14 @@ function buildSim(graph, prev) {
 			y: old?.y ?? node.y0 ?? 0,
 			z: old?.z ?? node.z0 ?? 0,
 			phase: hashOf("ph" + node.id) * Math.PI * 2,
-			// v5.5 节点大小分层：综合 强度 + 连接度 + 层级 —— 重要节点显著更大，
-			// 分支/弱记忆明显更小，一眼分辨「中枢/分支」
-			//   rStrength: 强度 0.55~1.30（越牢固越大）
-			//   rDegree:   连接度 1 + log2(1+degree)*0.16（中枢节点更大，最多 ~2.4×）
-			//   rLayer:    核心 1.30 / 工作区 1.18 / 衍生 0.78 / 其它 1.0
-			r: 5 * (0.55 + (node.strength ?? 0.5) * 0.75)
-				* (1 + Math.log2(1 + (node.degree ?? 0)) * 0.16)
-				* (node.type === "core" ? 1.30 : node.type === "workdir" ? 1.18 : node.type === "leaf" ? 0.78 : 1.0),
+			// v5.7 节点大小分层（收敛版）：综合 强度 + 连接度 + 层级 ——
+			// 中枢节点略大、分支更小，但整体不再挤占（v5.5 公式导致核心/工作区过大重叠）
+			//   rStrength: 强度 0.5~1.1（越牢固略大）
+			//   rDegree:   连接度 1 + min(0.7, log2(1+degree)*0.10)（最多 ~1.7×，温和）
+			//   rLayer:    核心 1.10 / 工作区 1.0 / 衍生 0.66 / 其它 0.85
+			r: 3.8 * (0.5 + (node.strength ?? 0.5) * 0.6)
+				* (1 + Math.min(0.7, Math.log2(1 + (node.degree ?? 0)) * 0.10))
+				* (node.type === "core" ? 1.10 : node.type === "workdir" ? 1.0 : node.type === "leaf" ? 0.66 : 0.85),
 			// 节点初始能量 = 真实激活强度（而非随机值），画布亮度/光晕始终反映真实 strength
 			energy: old?.energy ?? node.activation ?? node.strength ?? 0,
 			// v5.2：能量基线 = 真实强度 —— 非搜索态能量收敛回基线，不再衰减到全黑
