@@ -59,10 +59,34 @@ if (rows.length) {
   check("交汇分支可检索", sr.results.some((x) => x.branch.title.includes("⟡")), JSON.stringify(sr.results.map((x) => x.branch.title)));
 }
 
-// 5. crossLink 全链路（布局交叉检测，不崩且返回结构正确）
+// 5. crossLink 全链路：注入确定性交叉布局，验证【真实生成】⟡ 分支（v5.7 修复 NaN bug 后）
+// 构造 4 个节点：A(-0.5,0,0)-B(0.5,0,0) 与 C(0,-0.5,0)-D(0,0.5,0) 在球心 X 形交叉
+// （links 表不校验外键，直接用 fake id 即可验证检测+生成链路）
+db.graphCache = {
+  at: Date.now(),
+  data: {
+    nodes: [
+      { id: "x_a", x0: -0.5, y0: 0, z0: 0, type: "leaf", title: "交叉A", kind: "insight" },
+      { id: "x_b", x0: 0.5, y0: 0, z0: 0, type: "leaf", title: "交叉B", kind: "insight" },
+      { id: "x_c", x0: 0, y0: -0.5, z0: 0, type: "leaf", title: "交叉C", kind: "insight" },
+      { id: "x_d", x0: 0, y0: 0.5, z0: 0, type: "leaf", title: "交叉D", kind: "insight" }
+    ],
+    edges: [
+      { a: "x_a", b: "x_b", weight: 0.5 },
+      { a: "x_c", b: "x_d", weight: 0.5 }
+    ],
+    meta: {}
+  }
+};
 db.setMeta("lastCrossAt", 0);
-const cl = await db.crossLink({ cooldownMs: 0, maxCreated: 1 });
-check("crossLink 返回结构", typeof cl.created === "number" && ("skipped" in cl || cl.created >= 0), JSON.stringify(cl));
+const cl2 = await db.crossLink({ cooldownMs: 0, maxCreated: 2 });
+check("crossLink 真实生成交汇分支", cl2.created >= 1, JSON.stringify(cl2));
+const crossRows = db.db.prepare("SELECT * FROM branches WHERE title LIKE '⟡%' AND status='active'").all().map((r) => db.rowToBranch(r));
+check("⟡ 分支在记忆库可见", crossRows.length >= 1, "count=" + crossRows.length);
+if (crossRows.length) {
+  const links = db.db.prepare("SELECT a, b FROM links WHERE a=? OR b=?").all(crossRows[0].id, crossRows[0].id);
+  check("⟡ 分支与源节点已连线", links.length >= 2, "links=" + links.length);
+}
 
 db.close();
 console.log(failed === 0 ? "\n✅ 全部通过" : "\n❌ " + failed + " 项失败");

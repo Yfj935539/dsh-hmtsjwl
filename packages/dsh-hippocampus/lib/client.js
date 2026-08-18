@@ -1484,6 +1484,9 @@ const css = `
 .hp-legend-hint{display:flex;align-items:center;gap:7px;font-size:11px;color:#7d8590;margin-top:3px}
 .hp-legend-size{width:14px;height:3px;border-radius:2px;flex:none;background:linear-gradient(90deg,#5b6472,#4fc3f7)}
 .hp-legend-line{width:16px;height:3px;border-radius:2px;flex:none;background:currentColor;box-shadow:0 0 5px currentColor}
+/* v5.4/v5.5：图例 —— 金色锚环 / ⟡ 联想交汇 */
+.hp-legend-anchor{width:10px;height:10px;border-radius:50%;flex:none;border:2px solid #ffd479;box-shadow:0 0 6px #ffd47988}
+.hp-legend-cross{width:10px;height:10px;border-radius:50%;flex:none;background:#ba68c833;border:1px dashed #ba68c8;color:#ba68c8;text-align:center;line-height:9px;font-size:8px}
 .hp-tag-cloud{display:flex;flex-wrap:wrap;gap:5px}
 .hp-tag-chip{font-size:11px;color:#7ea6ff;background:#1f3a8a33;padding:2px 8px;border-radius:999px;cursor:pointer;user-select:none;border:1px solid transparent}
 .hp-tag-chip:hover{background:#1f3a8a55}
@@ -2116,7 +2119,10 @@ function MemoryView(props) {
 					t("legend.links")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-anchor" }),
-					"金色锚环 = 工作记忆激活"))),
+					"金色锚环 = 工作记忆激活"),
+				h("div", { className: "hp-legend-hint" },
+					h("span", { className: "hp-legend-cross" }),
+					"⟡ 紫色星标 = 联想交汇（连线交叉产生的新想法）"))),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
 				h("i", { style: { color: "#7fa8ff" } }),

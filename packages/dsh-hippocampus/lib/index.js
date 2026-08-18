@@ -1664,7 +1664,10 @@ class HippocampusDb {
       }
       if (edges.length < 2) return { created: 0, skipped: "edges<2" };
       // 两两检测（限量，防大图 O(N²) 爆炸）
-      const CROSS_THRESHOLD = 0.11; // 球坐标单位：两条连线最近距离小于该值视为交汇
+      // v5.7 修复：图节点坐标字段是 x0/y0/z0（布局理想坐标），必须显式提取——
+      // 此前直接传节点对象，segSegDist3 读到 undefined → NaN → 交叉永远检测不到
+      const CROSS_THRESHOLD = 0.13; // 球坐标单位：两条连线最近距离小于该值视为交汇
+      const pt = (n) => ({ x: n.x0 ?? 0, y: n.y0 ?? 0, z: n.z0 ?? 0 });
       const maxPairs = 6000;
       let pairs = 0;
       for (let i = 0; i < edges.length && created < maxCreated; i++) {
@@ -1674,8 +1677,8 @@ class HippocampusDb {
           // 共享端点不算交汇（那是同一个节点的分叉）
           const s = new Set([e1.a.id, e1.b.id, e2.a.id, e2.b.id]);
           if (s.size < 4) continue;
-          const d = segSegDist3(e1.a, e1.b, e2.a, e2.b);
-          if (d < CROSS_THRESHOLD) {
+          const d = segSegDist3(pt(e1.a), pt(e1.b), pt(e2.a), pt(e2.b));
+          if (isFinite(d) && d < CROSS_THRESHOLD) {
             const made = await this.upsertCrossBranch(e1.a, e1.b, e2.a, e2.b, d);
             created += made;
           }
@@ -2927,9 +2930,14 @@ class HippocampusService extends TypertRemoteService {
     return this.dbOf(request).searchBranches(q, limit, scopePath);
   }
 
-  /** 可视化图 */
+  /** 可视化图（打开记忆页即触发一次联想交汇检测 —— 让 ⟡ 新想法随浏览网络自然浮现） */
   async graph(request) {
-    return this.dbOf(request).graphData();
+    const db = this.dbOf(request);
+    const g = db.graphData();
+    if (process.env.DSH_HIPPOCAMPUS_CROSSLINK !== "0") {
+      db.crossLink({ maxCreated: 1, cooldownMs: 60000 }).catch(() => {});
+    }
+    return g;
   }
 
   /** 统计面板 */
