@@ -1,7 +1,7 @@
 // 主视图：记忆标签页装配（数据加载 / 搜索 / 演化 / 列表 / 画布 / 面板）
 const React = require("react");
 const { useState, useEffect, useRef, useMemo, useCallback, Fragment, createElement: h } = React;
-const { zh } = require("./i18n.js");
+const { zh, en } = require("./i18n.js");
 const { KIND_COLORS, KINDS, REASONS } = require("./constants.js");
 const { remoteCall } = require("./remote.js");
 const { GraphCanvas } = require("./components/canvas.js");
@@ -31,7 +31,15 @@ function prefetchMemory(ctx) {
 
 function MemoryView(props) {
 	const { t: tIn } = props;
-	const t = (key) => (tIn ? tIn(key) : (zh[key] ?? key));
+	// v5.8：界面语言手动切换（cn/en，不依赖 DSH 全局语言）；t 支持 {param} 插值
+	const [uiLang, setUiLang] = useState("zh");
+	const t = useCallback((key, params) => {
+		const d = uiLang === "en" ? en : zh;
+		let s = d[key] ?? (uiLang === "en" ? zh[key] : key) ?? key;
+		if (s && params) s = String(s).replace(/\{(\w+)\}/g, (_, k) => (params[k] !== void 0 ? String(params[k]) : "{" + k + "}"));
+		return s;
+	}, [uiLang]);
+	const toggleLang = useCallback(() => setUiLang((v) => (v === "zh" ? "en" : "zh")), []);
 	const [branches, setBranches] = useState(MEM_CACHE.branches);
 	const [graph, setGraph] = useState(MEM_CACHE.graph);
 	const [meta, setMeta] = useState(MEM_CACHE.meta);
@@ -207,7 +215,7 @@ function MemoryView(props) {
 		} else {
 			const res = await remoteCall(ctx, "create", { ...data, source: "user", ...scopeArgs });
 			if (!res.ok) throw new Error(res.error?.message ?? "create failed");
-			if (res.value?.dedup) notify("检测到相似记忆，已合并强化原记忆");
+			if (res.value?.dedup) notify(t("notify.dedup"));
 		}
 		setEditing(null);
 		notify(t("saved"));
@@ -235,7 +243,7 @@ function MemoryView(props) {
 		const res = await remoteCall(ctx, "evolve", scopeArgs);
 		if (!res.ok) return;
 		const v = res.value ?? {};
-		notify(t("evolved") + "：合并 " + (v.merged ?? 0) + " · 修剪连接 " + (v.prunedLinks ?? 0) + " · Gen " + (v.meta?.generation ?? 0));
+		notify(t("notify.evolved", { m: v.merged ?? 0, p: v.prunedLinks ?? 0, g: v.meta?.generation ?? 0 }));
 		setGraph(res.value);
 		await loadAll(true);
 	}, [ctx, loadAll, notify, t, scopeArgs]);
@@ -245,7 +253,7 @@ function MemoryView(props) {
 		const res = await remoteCall(ctx, "prune", scopeArgs);
 		if (!res.ok) return;
 		const v = res.value ?? {};
-		notify(t("prunedDone") + "：归档 " + (v.pruned ?? 0) + " 条弱记忆 · 修剪连接 " + (v.prunedLinks ?? 0));
+		notify(t("notify.pruned", { n: v.pruned ?? 0, p: v.prunedLinks ?? 0 }));
 		setGraph(res.value);
 		await loadAll(true);
 	}, [ctx, loadAll, notify, t, scopeArgs]);
@@ -254,7 +262,7 @@ function MemoryView(props) {
 	const [pruneTick, setPruneTick] = useState(0);
 	const doPruneView = useCallback(() => {
 		setPruneTick((v) => v + 1);
-		notify("已隐藏弱连接（<0.3）；再次按 E 恢复显示");
+		notify(t("notify.hideWeak"));
 	}, [notify]);
 
 	// 轨迹喂养：把当前对话的「轨迹」内容（用户/助手/工具消息，
@@ -262,16 +270,15 @@ function MemoryView(props) {
 	// 每小时定时任务自动增量喂养。显式携带 sessionId，确保命中当前会话轨迹。
 	const feed = useCallback(async () => {
 		const res = await remoteCall(ctx, "feed", { ...scopeArgs, sessionId: sessionIdOf(), sinceMs: 0 });
-		if (!res.ok) { notify("喂养失败：" + (res.error?.message ?? "未知")); return; }
+		if (!res.ok) { notify(t("notify.fedFail") + (res.error?.message ?? "?")); return; }
 		const v = res.value ?? {};
-		const detail = v.wrote
-			? " → 写入「" + (v.title ?? "会话精华") + "」（" + (v.chars ?? 0) + " 字）"
-			: v.reason
-				? "（" + v.reason + "）"
-				: "";
-		notify("轨迹喂养：" + (v.fed ?? 0) + " 条事件" + detail + (v.size?.triggered ? " · 存储超限已自动优化" : ""));
+		if (v.wrote) {
+			notify(t("notify.fed", { n: v.fed ?? 0, t: v.title ?? "session", c: v.chars ?? 0 }) + (v.size?.triggered ? " ⚠" : ""));
+		} else {
+			notify(t("notify.fedReason", { n: v.fed ?? 0, r: v.reason ?? "" }));
+		}
 		await loadAll(true);
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// ---- v5 复习调度：间隔重复到期计算（与后端 reviewIntervalDays 同公式） ----
 	// 注意：必须定义在 filtered 之前（filtered 会引用 showReviewOnly / dueIds）
@@ -342,10 +349,10 @@ function MemoryView(props) {
 	// 用户主动归档工作区目录（断开其全部连接，含偏好/交流永久连接）
 	const archiveWorkdir = useCallback(async (workdirPath) => {
 		const res = await remoteCall(ctx, "archiveWorkdir", { path: workdirPath });
-		if (!res.ok) { notify("归档失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已归档工作区「" + (workdirPath.split(/[/\\]+/).filter(Boolean).pop() ?? workdirPath) + "」，连接已断开");
+		if (!res.ok) { notify(t("notify.archiveFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.archiveWdir", { n: workdirPath.split(/[/\\]+/).filter(Boolean).pop() ?? workdirPath }));
 		await loadAll(true);
-	}, [ctx, loadAll, notify]);
+	}, [ctx, loadAll, notify, t]);
 
 	// 节点度数（来自突触图）
 	const degreeMap = useMemo(() => {
@@ -372,7 +379,7 @@ function MemoryView(props) {
 	// 导出记忆为 Markdown 文件
 	const onExport = useCallback(async () => {
 		const res = await remoteCall(ctx, "exportAll", scopeArgs);
-		if (!res.ok) { notify("导出失败：" + (res.error?.message ?? "未知")); return; }
+		if (!res.ok) { notify(t("notify.exportFail") + (res.error?.message ?? "?")); return; }
 		const text = res.value?.text ?? "";
 		const count = (text.match(/^##\s/gm) ?? []).length;
 		const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
@@ -382,8 +389,8 @@ function MemoryView(props) {
 		a.download = "hippocampus-memory-" + new Date().toISOString().slice(0, 10) + ".md";
 		a.click();
 		URL.revokeObjectURL(url);
-		notify("已导出 " + count + " 条记忆（.md）");
-	}, [ctx, notify, scopeArgs]);
+		notify(t("notify.export", { n: count }));
+	}, [ctx, notify, scopeArgs, t]);
 
 	// 导入记忆（Markdown/文本）
 	const onImportFile = useCallback(async (e) => {
@@ -393,21 +400,21 @@ function MemoryView(props) {
 		try {
 			const text = await file.text();
 			const res = await remoteCall(ctx, "importAll", { text, ...scopeArgs });
-			if (!res.ok) { notify("导入失败：" + (res.error?.message ?? "未知")); return; }
-			notify("导入完成：新增 " + (res.value?.imported ?? 0) + " · 去重合并 " + (res.value?.dedup ?? 0));
+			if (!res.ok) { notify(t("notify.importFail") + (res.error?.message ?? "?")); return; }
+			notify(t("notify.import", { i: res.value?.imported ?? 0, d: res.value?.dedup ?? 0 }));
 			await loadAll(true);
 		} catch (err) {
-			notify("导入失败：" + String(err?.message ?? err));
+			notify(t("notify.importFail") + String(err?.message ?? err));
 		}
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// 合并/重命名标签
 	const mergeTag = useCallback(async (tag) => {
-		const to = window.prompt("把标签「" + tag + "」合并/重命名为：", tag);
+		const to = window.prompt(uiLang === "en" ? "Merge/rename tag \"" + tag + "\" to:" : "把标签「" + tag + "」合并/重命名为：", tag);
 		if (!to || to.trim() === tag) return;
 		const res = await remoteCall(ctx, "tagRename", { from: tag, to: to.trim(), ...scopeArgs });
-		if (!res.ok) { notify("合并失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已合并 " + (res.value?.renamed ?? 0) + " 条记忆的标签");
+		if (!res.ok) { notify(t("notify.mergeTagFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.mergeTag", { n: res.value?.renamed ?? 0 }));
 		await loadAll(true);
 	}, [ctx, loadAll, notify, scopeArgs]);
 
@@ -443,7 +450,9 @@ function MemoryView(props) {
 		return () => document.removeEventListener("pointerdown", onDocClick);
 	}, [toolsOpen]);
 
-	const INJECT_MODES = { auto: "对话前自动", tool: "工具调取", refresh: "界面刷新" };
+	const INJECT_MODES = uiLang === "en"
+		? { auto: "Auto", tool: "Tool", refresh: "Refresh" }
+		: { auto: "对话前自动", tool: "工具调取", refresh: "界面刷新" };
 	const fmtTime = useCallback((ts) => {
 		if (!ts) return "";
 		const d = new Date(ts);
@@ -454,10 +463,10 @@ function MemoryView(props) {
 	// 复习一条记忆
 	const doReview = useCallback(async (id) => {
 		const res = await remoteCall(ctx, "review", { id, ...scopeArgs });
-		if (!res.ok) { notify("复习失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已复习强化：「" + (res.value?.title ?? "") + "」 强度 " + (res.value?.strength ?? 0).toFixed(2));
+		if (!res.ok) { notify(t("notify.reviewFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.review", { t: res.value?.title ?? "", s: (res.value?.strength ?? 0).toFixed(2) }));
 		await loadAll(true);
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// 批量复习全部到期记忆
 	const reviewAllDue = useCallback(async () => {
@@ -466,10 +475,10 @@ function MemoryView(props) {
 		for (const id of dueIds) {
 			try { await remoteCall(ctx, "review", { id, ...scopeArgs }); done++; } catch { /* 单条失败继续 */ }
 		}
-		notify("已复习 " + done + "/" + dueIds.size + " 条到期记忆");
+		notify(t("notify.reviewAll", { d: done, n: dueIds.size }));
 		setShowReviewOnly(false);
 		await loadAll(true);
-	}, [ctx, dueIds, loadAll, notify, scopeArgs]);
+	}, [ctx, dueIds, loadAll, notify, scopeArgs, t]);
 
 	// 切换时间线视图时拉取一次
 	const loadTimeline = useCallback(async () => {
@@ -514,21 +523,21 @@ function MemoryView(props) {
 	const doLink = useCallback(async () => {
 		if (!linkA || !linkB || linkA === linkB) return;
 		const res = await remoteCall(ctx, "linkManual", { a: linkA, b: linkB, weight: linkWeight, ...scopeArgs });
-		if (!res.ok) { notify("连接失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已连接两记忆，权重 " + (res.value?.weight ?? linkWeight).toFixed(2));
+		if (!res.ok) { notify(t("notify.linkFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.link", { w: (res.value?.weight ?? linkWeight).toFixed(2) }));
 		setShowLinker(false);
 		await loadAll(true);
-	}, [ctx, linkA, linkB, linkWeight, loadAll, notify, scopeArgs]);
+	}, [ctx, linkA, linkB, linkWeight, loadAll, notify, scopeArgs, t]);
 
 	// 手动断开突触
 	const doUnlink = useCallback(async () => {
 		if (!linkA || !linkB || linkA === linkB) return;
 		const res = await remoteCall(ctx, "unlinkManual", { a: linkA, b: linkB, ...scopeArgs });
-		if (!res.ok) { notify("断开失败：" + (res.error?.message ?? "未知")); return; }
-		notify(res.value?.unlinked ? "已断开两记忆间的连接" : "两记忆间原本无连接");
+		if (!res.ok) { notify(t("notify.unlinkFail") + (res.error?.message ?? "?")); return; }
+		notify(res.value?.unlinked ? t("notify.unlink") : t("notify.unlinkNone"));
 		setShowLinker(false);
 		await loadAll(true);
-	}, [ctx, linkA, linkB, loadAll, notify, scopeArgs]);
+	}, [ctx, linkA, linkB, loadAll, notify, scopeArgs, t]);
 
 	// 左侧控制面板（图例 + 自学习 + 自演化 —— 真实数据与操作）
 	const leftPanel = h("div", { className: "hp-left" },
@@ -551,26 +560,26 @@ function MemoryView(props) {
 					t("legend.links")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-anchor" }),
-					"金色锚环 = 工作记忆激活"),
+					t("legend.anchor")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-cross" }),
-					"⟡ 紫色星标 = 联想交汇（连线交叉产生的新想法）"))),
+					t("legend.cross")))),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
 				h("i", { style: { color: "#7fa8ff" } }),
-				"连接含义"),
+				t("conn.legend")),
 			h("div", { className: "hp-legend" },
 				REASONS.map((r) => h("div", { className: "hp-legend-row", key: r.label },
 					h("span", { className: "hp-legend-line", style: { background: r.color, color: r.color } }),
 					r.label)))),
 		h("div", { className: "hp-panel" },
-			h("div", { className: "hp-panel-title hp-collapse", onClick: () => setTagCloudOpen((v) => !v), title: tagCloudOpen ? "折叠标签云" : "展开标签云" },
+			h("div", { className: "hp-panel-title hp-collapse", onClick: () => setTagCloudOpen((v) => !v), title: tagCloudOpen ? t("tagcloud.title") : t("tagcloud.title") },
 				h("i", { style: { color: "#ffd479" } }),
-				"标签云 · 点击筛选 / 右键合并",
+				t("tagcloud.title"),
 				h("span", { className: "hp-collapse-arrow" }, tagCloudOpen ? "▾" : "▸")),
 			tagCloudOpen ? h("div", { className: "hp-tag-cloud" },
-				tagCloud.length === 0 ? h("div", { className: "hp-legend-hint" }, "暂无标签") : null,
-				tagCloud.map(({ tag, count }) => h("span", { key: tag, className: "hp-tag-chip", "data-on": tagFilter === tag || undefined, title: "点击筛选 · 右键合并", onClick: () => setTagFilter(tagFilter === tag ? null : tag), onContextMenu: (e) => { e.preventDefault(); mergeTag(tag); } }, tag + " " + count)))
+				tagCloud.length === 0 ? h("div", { className: "hp-legend-hint" }, t("tagcloud.empty")) : null,
+				tagCloud.map(({ tag, count }) => h("span", { key: tag, className: "hp-tag-chip", "data-on": tagFilter === tag || undefined, title: t("tagcloud.title"), onClick: () => setTagFilter(tagFilter === tag ? null : tag), onContextMenu: (e) => { e.preventDefault(); mergeTag(tag); } }, tag + " " + count)))
 				: null),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
@@ -584,12 +593,12 @@ function MemoryView(props) {
 			h("div", { className: "hp-ctrl-btns" },
 				h("button", { className: "hp-btn", onClick: () => setRunning((r) => !r) }, t("ctrl.toggle")))),
 		// 小白教程：置于「开关学习」按钮下方，解释工具是什么/能力/做了什么/为什么
-		h("button", { className: "hp-tut-toggle", onClick: () => setShowTutorial((v) => !v) }, (showTutorial ? "▾ " : "▸ ") + "📖 小白教程"),
+		h("button", { className: "hp-tut-toggle", onClick: () => setShowTutorial((v) => !v) }, (showTutorial ? "▾ " : "▸ ") + t("tut.title")),
 		showTutorial ? h("div", { className: "hp-tut" },
-			h("div", { className: "hp-tut-item" }, h("b", null, "这是什么："), "海马体记忆是 Agent 的「长期记忆」插件，像大脑的海马体一样把信息沉淀下来。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "执行什么能力："), "「记忆」标签页 + memory_write/read/search/edit/forget 等工具 + 3D 神经网络可视化 + 自学习/自演化。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "做了什么："), "每条记忆是一个神经元，相关记忆自动连线（突触）；搜索时相关节点点亮、无关变暗；定期合并重复、修剪弱连接。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "为什么要这样："), "模型本身不记得上次对话；把关键信息存下来并在需要时自动注入，Agent 才能记住你的偏好与项目进度，避免重复提问和上下文污染。"))
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.what")), t("tut.what.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.cap")), t("tut.cap.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.done")), t("tut.done.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.why")), t("tut.why.desc")))
 			: null,
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
@@ -621,19 +630,21 @@ function MemoryView(props) {
 					h("button", { className: "hp-chip", "data-on": kindFilter === null || undefined, onClick: () => setKindFilter(null) }, t("filter.all")),
 					KINDS.map((k) => h("button", { className: "hp-chip", "data-on": kindFilter === k || undefined, key: k, onClick: () => setKindFilter(kindFilter === k ? null : k) }, t("kind." + k)))),
 				h("button", { className: "hp-btn hp-btn-primary", onClick: () => { setIsNew(true); setEditing({}); } }, t("btn.new")),
-				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: "间隔重复到期待复习" }, "待复习 " + dueCount) : null,
+				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: t("btn.review") }, t("btn.review") + " " + dueCount) : null,
 				h("button", { className: "hp-btn", onClick: loadAll }, t("btn.refresh")),
 				// v5.3：全屏专注 —— 隐藏左右/顶部工具栏，3D 视图占满（Esc / 画布内按钮退出）
-				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: "全屏查看 3D 网络（Esc 退出）" }, "⛶ 全屏"),
+				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: t("btn.fullscreen") }, t("btn.fullscreen")),
+				// v5.8：界面语言切换（cn / en）
+				h("button", { className: "hp-btn" + (uiLang === "en" ? " hp-btn-primary" : ""), onClick: toggleLang, title: uiLang === "en" ? "切换中文" : "Switch to English" }, uiLang === "en" ? "中 / EN" : "EN / 中"),
 				// v5.2：次要工具收纳进「工具」下拉（导出/导入/F9/F5/F6），顶栏不再拥挤
 				h("div", { className: "hp-tools", ref: toolsRef },
-					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: "导出/导入/注入日志/手动连线/演化日志" }, "⚙ 工具 " + (toolsOpen ? "▾" : "▸")),
+					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: t("btn.tools") }, t("btn.tools") + " " + (toolsOpen ? "▾" : "▸")),
 					toolsOpen ? h("div", { className: "hp-tools-menu" },
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); onExport(); } }, "⬇ 导出 .md"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); importRef.current?.click(); } }, "⬆ 导入 .md"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openInjectLog(); } }, "F9 · 注入日志"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openLinker(); }, disabled: !selectedId }, "F5 · 手动连线" + (selectedId ? "" : "（需选中）")),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openEvolog(); } }, "F6 · 演化日志"))
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); onExport(); } }, t("btn.tools.export")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); importRef.current?.click(); } }, t("btn.tools.import")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openInjectLog(); } }, t("btn.tools.inject")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openLinker(); }, disabled: !selectedId }, selectedId ? t("btn.tools.link") : t("btn.tools.linkNeed")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openEvolog(); } }, t("btn.tools.evolog")))
 						: null),
 				h("input", { ref: importRef, type: "file", accept: ".md,.markdown,.txt,text/markdown,text/plain", style: { display: "none" }, onChange: onImportFile })),
 			h("div", { className: "hp-body" },
@@ -669,11 +680,11 @@ function MemoryView(props) {
 						}),
 							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },
-								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, "活跃 " + activeCount + " · 归档 " + archivedCount) : null,
+								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, t("list.active") + " " + activeCount + " · " + t("list.archived") + " " + archivedCount) : null,
 								kindGroups.map(([kind, items]) => {
 									const collapsed = collapsedKinds.has(kind);
 									return h(Fragment, { key: kind },
-										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: collapsed ? "展开 " + t("kind." + kind) : "折叠 " + t("kind." + kind) },
+										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: (collapsed ? (uiLang === "en" ? "Expand " : "展开 ") : (uiLang === "en" ? "Collapse " : "折叠 ")) + t("kind." + kind) },
 											h("span", { className: "hp-group-dot", style: { background: KIND_COLORS[kind] ?? KIND_COLORS.other, color: KIND_COLORS[kind] ?? KIND_COLORS.other } }),
 											h("span", { className: "hp-group-name" }, t("kind." + kind)),
 											h("span", { className: "hp-group-count" }, String(items.length)),
@@ -704,56 +715,56 @@ function MemoryView(props) {
 			// F9：注入日志模态框
 			showInjectLog ? h("div", { className: "hp-modal", onClick: () => setShowInjectLog(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F9 注入日志（对话前自动/工具/刷新）"),
+					h("div", { className: "hp-modal-title" }, t("f9.title")),
 					h("div", { className: "hp-inject-log" },
 						injectLogData ? injectLogData.map((e) =>
 							h("div", { key: e.id, className: "hp-log-row" },
 								h("span", { className: "hp-log-time" }, fmtTime(e.ts)),
 								h("span", { className: "hp-log-mode", "data-mode": e.mode }, INJECT_MODES[e.mode] ?? e.mode),
-								h("span", { className: "hp-log-count" }, e.count + " 条"),
-								h("span", { className: "hp-log-chars" }, e.chars + " 字"),
+								h("span", { className: "hp-log-count" }, e.count + (uiLang === "en" ? " items" : " 条")),
+								h("span", { className: "hp-log-chars" }, e.chars + (uiLang === "en" ? " chars" : " 字")),
 								e.title ? h("span", { className: "hp-log-title" }, e.title) : null
 							)
-						) : h("div", { className: "hp-loading" }, "加载中…")))) : null,
+						) : h("div", { className: "hp-loading" }, t("loading2"))))) : null,
 			// F5：手动突触连接/断开模态框
 			showLinker ? h("div", { className: "hp-modal", onClick: () => setShowLinker(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F5 手动突触编辑（连接/断开）"),
+					h("div", { className: "hp-modal-title" }, t("f5.title")),
 					h("div", { className: "hp-field" },
-						h("label", null, "记忆 A id"),
-						h("input", { className: "hp-input", type: "text", value: linkA, onChange: (e) => setLinkA(e.target.value), placeholder: selectedId ? selectedId : "输入记忆 id" })),
+						h("label", null, t("link.a")),
+						h("input", { className: "hp-input", type: "text", value: linkA, onChange: (e) => setLinkA(e.target.value), placeholder: selectedId ? selectedId : (uiLang === "en" ? "enter memory id" : "输入记忆 id") })),
 					h("div", { className: "hp-field" },
-						h("label", null, "记忆 B id"),
-						h("input", { className: "hp-input", type: "text", value: linkB, onChange: (e) => setLinkB(e.target.value), placeholder: "输入记忆 id" })),
+						h("label", null, t("link.b")),
+						h("input", { className: "hp-input", type: "text", value: linkB, onChange: (e) => setLinkB(e.target.value), placeholder: uiLang === "en" ? "enter memory id" : "输入记忆 id" })),
 					h("div", { className: "hp-field" },
-						h("label", null, "连接权重 " + linkWeight.toFixed(2)),
+						h("label", null, t("link.weight") + " " + linkWeight.toFixed(2)),
 						h("input", { className: "hp-range", type: "range", min: "0.05", max: "1", step: "0.05", value: linkWeight, onChange: (e) => setLinkWeight(parseFloat(e.target.value)) }),
 						h("span", { className: "hp-range-val" }, linkWeight.toFixed(2))),
 					linkRelations && linkRelations.length > 0 ? h("div", { className: "hp-field" },
-						h("label", null, "当前连接（" + selectedId + "）"),
+						h("label", null, t("link.current") + " (" + selectedId + ")"),
 						h("div", { className: "hp-link-list" },
-							linkRelations.map((l) => h("span", { key: l.other, className: "hp-link-item", onClick: () => l.other === linkA ? setLinkB(l.other) : setLinkA(l.other), title: "点击填入 " + l.title }, l.title + " (" + l.weight.toFixed(2) + ")")))) : null,
+							linkRelations.map((l) => h("span", { key: l.other, className: "hp-link-item", onClick: () => l.other === linkA ? setLinkB(l.other) : setLinkA(l.other), title: (uiLang === "en" ? "click to fill " : "点击填入 ") + l.title }, l.title + " (" + l.weight.toFixed(2) + ")")))) : null,
 					h("div", { className: "hp-modal-actions" },
-						h("button", { className: "hp-btn hp-btn-primary", onClick: doLink, disabled: !linkA || !linkB || linkA === linkB }, "建立连接"),
-						h("button", { className: "hp-btn", onClick: doUnlink, disabled: !linkA || !linkB || linkA === linkB }, "断开连接"),
-						h("button", { className: "hp-btn", onClick: () => setShowLinker(false) }, "取消")))) : null,
+						h("button", { className: "hp-btn hp-btn-primary", onClick: doLink, disabled: !linkA || !linkB || linkA === linkB }, t("link.connect")),
+						h("button", { className: "hp-btn", onClick: doUnlink, disabled: !linkA || !linkB || linkA === linkB }, t("link.disconnect")),
+						h("button", { className: "hp-btn", onClick: () => setShowLinker(false) }, t("btn.cancel"))))) : null,
 			// F6：演化日志模态框
 			showEvolog ? h("div", { className: "hp-modal", onClick: () => setShowEvolog(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F6 演化日志（自循环进化历史）"),
+					h("div", { className: "hp-modal-title" }, t("f6.title")),
 					h("div", { className: "hp-evolog-list" },
 						evologData ? evologData.map((e) =>
 							h("div", { key: e.id, className: "hp-evolog-row" },
 								h("div", { className: "hp-evolog-head" },
-									h("span", { className: "hp-evolog-epoch" }, "Epoch " + e.epoch + " · Gen " + e.generation),
+									h("span", { className: "hp-evolog-epoch" }, t("evo.epochGen", { e: e.epoch, g: e.generation })),
 									h("span", { className: "hp-evolog-time" }, fmtTime(e.ts))),
 								h("div", { className: "hp-evolog-stats" },
-									h("span", null, "合并: " + e.merged),
-									h("span", null, "修剪: " + e.prunedLinks),
-									h("span", null, "fitness: " + (e.fitnessAfter ?? 0).toFixed(3)),
-									h("span", null, "lr: " + (e.lr ?? 0.01).toFixed(3)))
+									h("span", null, t("evo.merged") + " " + e.merged),
+									h("span", null, t("evo.pruned") + " " + e.prunedLinks),
+									h("span", null, t("evo.fitness") + " " + (e.fitnessAfter ?? 0).toFixed(3)),
+									h("span", null, t("evo.lr") + " " + (e.lr ?? 0.01).toFixed(3)))
 							)
-						) : h("div", { className: "hp-loading" }, "加载中…")))) : null
+						) : h("div", { className: "hp-loading" }, t("loading2"))))) : null
 		);
 }
 

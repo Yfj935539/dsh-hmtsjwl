@@ -28,8 +28,8 @@ function BranchCard({ branch, selected, degree, due, onSelect, onEdit, onArchive
 		h("div", { className: "hp-card-top" },
 			h("span", { className: "hp-badge", style: { background: color } }, t("kind." + branch.kind)),
 			h("span", { className: "hp-card-title", title: branch.title }, branch.title),
-			due ? h("span", { className: "hp-due-badge", title: "间隔重复到期，待复习" }, "🔔") : null,
-			h("span", { className: "hp-quality", "data-q": qLvl, title: "质量 " + q.toFixed(2) }, qLvl === "good" ? "优" : qLvl === "mid" ? "中" : "低"),
+			due ? h("span", { className: "hp-due-badge", title: t("btn.review") }, "🔔") : null,
+			h("span", { className: "hp-quality", "data-q": qLvl, title: t("quality.prefix") + " " + q.toFixed(2) }, qLvl === "good" ? t("quality.good") : qLvl === "mid" ? t("quality.mid") : t("quality.low")),
 			typeof degree === "number" && degree > 0 ? h("span", { className: "hp-degree", title: t("status.degree") }, "⚡" + degree) : null,
 			h("span", { className: "hp-age", title: t("status.age") }, ageText(branch.updatedAt, t)),
 			h("span", { className: "hp-card-meta", style: { color: open ? "#7ea6ff" : "#5b6472" } }, open ? "▾" : "▸")),
@@ -74,7 +74,7 @@ function EditorModal(props) {
 
 	const submit = async () => {
 		if (!title.trim()) {
-			setError("标题不能为空");
+			setError(t("err.title.empty"));
 			return;
 		}
 		setBusy(true);
@@ -99,7 +99,7 @@ function EditorModal(props) {
 			h("div", { className: "hp-modal-title" }, isNew ? t("new.title") : t("edit.title")),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.title")),
-				h("input", { className: "hp-input", value: title, onChange: (e) => setTitle(e.target.value), placeholder: "一句话概括这条记忆" })),
+				h("input", { className: "hp-input", value: title, onChange: (e) => setTitle(e.target.value), placeholder: t("field.title.placeholder") })),
 			h("div", { className: "hp-row" },
 				h("div", { className: "hp-field" },
 					h("label", null, t("field.kind")),
@@ -112,7 +112,7 @@ function EditorModal(props) {
 						h("option", { value: "archived" }, t("status.archived"))))),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.tags")),
-				h("input", { className: "hp-input", value: tags, onChange: (e) => setTags(e.target.value), placeholder: "例如: 偏好, 中文, 任务A（留空自动生成）" })),
+				h("input", { className: "hp-input", value: tags, onChange: (e) => setTags(e.target.value), placeholder: t("field.tags.placeholder") })),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.content")),
 				h("textarea", { className: "hp-textarea", value: content, onChange: (e) => setContent(e.target.value) })),
@@ -126,7 +126,7 @@ function EditorModal(props) {
 			!isNew && (branch.history ?? []).length > 0
 				? h("div", { className: "hp-history" },
 					h("div", null, t("history")),
-					branch.history.slice(-4).reverse().map((row, i) => h("div", { key: i }, "· " + new Date(row.at).toLocaleString("zh-CN") + " — " + row.by + "：" + row.summary.slice(0, 80))))
+					branch.history.slice(-4).reverse().map((row, i) => h("div", { key: i }, t("hist.row", { time: new Date(row.at).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }), by: row.by, summary: String(row.summary ?? "").slice(0, 80) }))))
 				: null)
 	);
 }

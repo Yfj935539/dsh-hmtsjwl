@@ -2446,17 +2446,17 @@ class HippocampusDb {
     const workstate = active.filter((b) => b.kind === "workstate").sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
     const insight = active.filter((b) => b.kind === "insight").sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
     const stats = this.buildMeta();
-    const scopeName = "统一记忆库";
-    const head = "【" + scopeName + " · 记忆包】" + (this.projectPath ? " 当前目录: " + this.projectPath : "");
+    // v5.8：记忆包文本框架英文化（降低对话中 memory_context 的 token 支出；记忆内容保留原文）
+    const head = "【Hippocampus Memory Pack】" + (this.projectPath ? " cwd: " + this.projectPath : "");
     const lines = [head];
-    if (workstate) lines.push("▶ 工作状态: " + String(workstate.content).slice(0, 300));
+    if (workstate) lines.push("▶ Work state: " + String(workstate.content).slice(0, 300));
     for (const t of top) {
       lines.push("• [" + t.kind + "|" + t.strength.toFixed(2) + "|" + t.packScore.toFixed(2) + "] " + t.title + " — " + String(t.content).slice(0, len));
     }
     if (insight && !top.some((t) => t.id === insight.id)) {
-      lines.push("• [洞察] " + insight.title + " — " + String(insight.content).slice(0, len));
+      lines.push("• [insight] " + insight.title + " — " + String(insight.content).slice(0, len));
     }
-    lines.push("〔统计: 活跃 " + stats.counts.active + " · 连接 " + stats.connections + " · 强度均 " + (stats.fitness || 0).toFixed(2) + " · epoch " + stats.epoch + " · 归档 " + stats.counts.archived + " · 库大小 " + Math.round(stats.sizeBytes / 1024) + "KB〕");
+    lines.push("〔stats: active " + stats.counts.active + " · links " + stats.connections + " · avg-strength " + (stats.fitness || 0).toFixed(2) + " · epoch " + stats.epoch + " · archived " + stats.counts.archived + " · db " + Math.round(stats.sizeBytes / 1024) + "KB〕");
     // v5.4：记忆包被调用 → 激活 top 锚点（保持工作记忆延续）+ 附带锚点列表
     if (this.anchors) {
       this.anchors.activate(top.slice(0, 8).map((t) => t.id), 0.4);
@@ -3904,21 +3904,23 @@ function registerPromptMemory(ctx, service, factory) {
         if (!seen.has(rb.id)) { seen.add(rb.id); pick.push({ b: rb, tag: "✦" }); }
       }
       const items = pick.slice(0, 14);
-      const lines = ["# 海马体记忆（对话前自动调取）", "以下是你的长期记忆（统一记忆库）中的关键内容，工作与回答时优先参考："];
+      // v5.8：注入框架文本使用英文（token 更省）；记忆标题/内容为用户数据保持原文
+      const lines = ["# Hippocampus Memory (auto-injected)",
+        "Key long-term memories — prioritize these while working:"];
       if (recall && recall.results.length) {
-        lines.push("▍与您本条消息相关的记忆（已预先检索）:");
+        lines.push("▍Memories relevant to your current message (pre-retrieved):");
         for (const r of recall.results.slice(0, 6)) {
-          lines.push("• [" + (KIND_LABELS[r.kind] ?? r.kind) + "|" + r.score + "] " + r.title + "：" + String(r.content).slice(0, 130));
+          lines.push("• [" + (r.kind ?? "other") + "|" + r.score + "] " + r.title + "：" + String(r.content).slice(0, 130));
         }
         lines.push("");
       }
-      if (pack.workstate) lines.push("▶ 当前工作状态：\n" + String(pack.workstate.content).slice(0, 260));
+      if (pack.workstate) lines.push("▶ Current work state:\n" + String(pack.workstate.content).slice(0, 260));
       for (const { b, tag, isRecall } of items) {
         if (pack.workstate && b.id === pack.workstate.id) continue;
         if (isRecall) continue; // 预检索结果已单独列出，避免重复
-        lines.push("• [" + (tag ? tag + " " : "") + (KIND_LABELS[b.kind] ?? b.kind) + "|" + b.strength.toFixed(2) + "] " + b.title + "：" + String(b.content).slice(0, 130));
+        lines.push("• [" + (tag ? tag + " " : "") + (b.kind ?? "other") + "|" + b.strength.toFixed(2) + "] " + b.title + "：" + String(b.content).slice(0, 130));
       }
-      lines.push("记忆工具：memory_write/read/search/edit/forget/stats/context/evolve/analyze/export/import/review 可随时读写记忆；⚓=工作记忆中激活，✦=最近新增；轨迹每小时自动喂养。");
+      lines.push("Memory tools: memory_write/read/search/edit/forget/stats/context/evolve/analyze/export/import/review. ⚓=active in working memory, ✦=recently added. Trajectory auto-fed hourly.");
       text = lines.join("\n");
       udb.logInjection("auto", items.map((x) => x.b).concat(recallPick.map((x) => x.b)), pack.workstate?.id);
     } catch { text = ""; }

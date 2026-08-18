@@ -301,7 +301,7 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 		const hit = hitTest(sim, e.clientX, e.clientY);
 		// 右键工作区目录节点 → 主动归档（断开其全部连接，含偏好/交流永久连接）
 		if (hit && hit.type === "workdir") {
-			if (window.confirm("归档工作区「" + hit.title + "」？\n将断开该工作区的全部连接（含与偏好/交流的永久连接），除非再次使用该目录，否则不再重建。")) {
+			if (window.confirm(t("confirm.archiveWdir", { t: hit.title }))) {
 				onArchiveWorkdir?.(hit.workdir);
 			}
 			return;
@@ -321,16 +321,16 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	return h("div", { className: "hp-canvas-wrap" + (focusMode ? " hp-canvas-full" : ""), ref: wrapRef, style: { position: "relative" } },
 		h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, onContextMenu, onDoubleClick, onWheel }),
 		// v5.3：全屏专注模式的退出按钮（右上角悬浮，Esc 亦可）
-		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, "✕ 退出全屏") : null,
+		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, t("exit.fullscreen")) : null,
 		empty ? h("div", { className: "hp-empty-overlay", style: { bottom: 26 } },
 			h("div", { style: { fontSize: 20, opacity: 0.5 } }, "🧠"),
 			h("div", { style: { fontSize: 13 } }, t("empty.title")),
 			h("div", { style: { fontSize: 11 } }, t("empty.body"))) : null,
 		h("div", { className: "hp-hints", style: { bottom: 34 } },
-			h("span", null, "单击节点 = 聚焦"),
-			h("span", null, "拖拽 = 旋转"),
-			h("span", null, "滚轮 = 缩放"),
-			h("span", null, t("hint.reset")),
+			h("span", null, t("canvas.click")),
+			h("span", null, t("canvas.drag")),
+			h("span", null, t("canvas.zoom")),
+			h("span", null, t("canvas.reset")),
 			h("span", null, running ? "▸" : "▮")),
 		h("div", { className: "hp-statusbar" },
 				sel

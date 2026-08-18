@@ -309,7 +309,7 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 		const hit = hitTest(sim, e.clientX, e.clientY);
 		// 右键工作区目录节点 → 主动归档（断开其全部连接，含偏好/交流永久连接）
 		if (hit && hit.type === "workdir") {
-			if (window.confirm("归档工作区「" + hit.title + "」？\n将断开该工作区的全部连接（含与偏好/交流的永久连接），除非再次使用该目录，否则不再重建。")) {
+			if (window.confirm(t("confirm.archiveWdir", { t: hit.title }))) {
 				onArchiveWorkdir?.(hit.workdir);
 			}
 			return;
@@ -329,16 +329,16 @@ function GraphCanvas({ graph, selectedId, selectedNode, onSelect, onReset, onEvo
 	return h("div", { className: "hp-canvas-wrap" + (focusMode ? " hp-canvas-full" : ""), ref: wrapRef, style: { position: "relative" } },
 		h("canvas", { className: "hp-canvas", ref: canvasRef, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, onContextMenu, onDoubleClick, onWheel }),
 		// v5.3：全屏专注模式的退出按钮（右上角悬浮，Esc 亦可）
-		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, "✕ 退出全屏") : null,
+		focusMode ? h("button", { className: "hp-exit-focus", onClick: () => onToggleFocus?.() }, t("exit.fullscreen")) : null,
 		empty ? h("div", { className: "hp-empty-overlay", style: { bottom: 26 } },
 			h("div", { style: { fontSize: 20, opacity: 0.5 } }, "🧠"),
 			h("div", { style: { fontSize: 13 } }, t("empty.title")),
 			h("div", { style: { fontSize: 11 } }, t("empty.body"))) : null,
 		h("div", { className: "hp-hints", style: { bottom: 34 } },
-			h("span", null, "单击节点 = 聚焦"),
-			h("span", null, "拖拽 = 旋转"),
-			h("span", null, "滚轮 = 缩放"),
-			h("span", null, t("hint.reset")),
+			h("span", null, t("canvas.click")),
+			h("span", null, t("canvas.drag")),
+			h("span", null, t("canvas.zoom")),
+			h("span", null, t("canvas.reset")),
 			h("span", null, running ? "▸" : "▮")),
 		h("div", { className: "hp-statusbar" },
 				sel
@@ -391,8 +391,8 @@ function BranchCard({ branch, selected, degree, due, onSelect, onEdit, onArchive
 		h("div", { className: "hp-card-top" },
 			h("span", { className: "hp-badge", style: { background: color } }, t("kind." + branch.kind)),
 			h("span", { className: "hp-card-title", title: branch.title }, branch.title),
-			due ? h("span", { className: "hp-due-badge", title: "间隔重复到期，待复习" }, "🔔") : null,
-			h("span", { className: "hp-quality", "data-q": qLvl, title: "质量 " + q.toFixed(2) }, qLvl === "good" ? "优" : qLvl === "mid" ? "中" : "低"),
+			due ? h("span", { className: "hp-due-badge", title: t("btn.review") }, "🔔") : null,
+			h("span", { className: "hp-quality", "data-q": qLvl, title: t("quality.prefix") + " " + q.toFixed(2) }, qLvl === "good" ? t("quality.good") : qLvl === "mid" ? t("quality.mid") : t("quality.low")),
 			typeof degree === "number" && degree > 0 ? h("span", { className: "hp-degree", title: t("status.degree") }, "⚡" + degree) : null,
 			h("span", { className: "hp-age", title: t("status.age") }, ageText(branch.updatedAt, t)),
 			h("span", { className: "hp-card-meta", style: { color: open ? "#7ea6ff" : "#5b6472" } }, open ? "▾" : "▸")),
@@ -437,7 +437,7 @@ function EditorModal(props) {
 
 	const submit = async () => {
 		if (!title.trim()) {
-			setError("标题不能为空");
+			setError(t("err.title.empty"));
 			return;
 		}
 		setBusy(true);
@@ -462,7 +462,7 @@ function EditorModal(props) {
 			h("div", { className: "hp-modal-title" }, isNew ? t("new.title") : t("edit.title")),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.title")),
-				h("input", { className: "hp-input", value: title, onChange: (e) => setTitle(e.target.value), placeholder: "一句话概括这条记忆" })),
+				h("input", { className: "hp-input", value: title, onChange: (e) => setTitle(e.target.value), placeholder: t("field.title.placeholder") })),
 			h("div", { className: "hp-row" },
 				h("div", { className: "hp-field" },
 					h("label", null, t("field.kind")),
@@ -475,7 +475,7 @@ function EditorModal(props) {
 						h("option", { value: "archived" }, t("status.archived"))))),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.tags")),
-				h("input", { className: "hp-input", value: tags, onChange: (e) => setTags(e.target.value), placeholder: "例如: 偏好, 中文, 任务A（留空自动生成）" })),
+				h("input", { className: "hp-input", value: tags, onChange: (e) => setTags(e.target.value), placeholder: t("field.tags.placeholder") })),
 			h("div", { className: "hp-field" },
 				h("label", null, t("field.content")),
 				h("textarea", { className: "hp-textarea", value: content, onChange: (e) => setContent(e.target.value) })),
@@ -489,7 +489,7 @@ function EditorModal(props) {
 			!isNew && (branch.history ?? []).length > 0
 				? h("div", { className: "hp-history" },
 					h("div", null, t("history")),
-					branch.history.slice(-4).reverse().map((row, i) => h("div", { key: i }, "· " + new Date(row.at).toLocaleString("zh-CN") + " — " + row.by + "：" + row.summary.slice(0, 80))))
+					branch.history.slice(-4).reverse().map((row, i) => h("div", { key: i }, t("hist.row", { time: new Date(row.at).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }), by: row.by, summary: String(row.summary ?? "").slice(0, 80) }))))
 				: null)
 	);
 }
@@ -1084,13 +1084,11 @@ function hash01(str) {
 exports.draw = draw;
       },
       "i18n.js": function (module, exports, require) {
-// 词典（中 / 英），供 locale 注册与渲染兜底
+// 词典（中 / 英）—— 记忆页 UI 完整双语（可手动切换，不依赖 DSH 全局语言）
+// 支持 {param} 插值：t("key", { a: 1 })
 const zh = {
 	"view.memory": "记忆",
 	"tab.hint": "海马体记忆",
-	"scope.global": "全局记忆",
-	"scope.project": "项目记忆",
-	"scope.noProject": "未检测到当前项目（工作区），已回退全局记忆",
 	"stats.neurons": "神经元",
 	"stats.connections": "突触",
 	"stats.activation": "激活强度",
@@ -1112,15 +1110,22 @@ const zh = {
 	"btn.delete": "删除",
 	"btn.save": "保存",
 	"btn.cancel": "取消",
-	"btn.evolve": "演化 F",
-	"btn.prune": "修剪 E",
-	"btn.anim": "动画 空格",
-	"hint.reset": "双击 = 重置视图",
-	"hint.clear": "右键 = 清除选择",
-	"hint.drag": "拖拽 = 旋转球体",
+	"btn.export": "导出",
+	"btn.import": "导入",
+	"btn.review": "待复习",
+	"btn.fullscreen": "⛶ 全屏",
+	"btn.tools": "⚙ 工具",
+	"btn.tools.export": "⬇ 导出 .md",
+	"btn.tools.import": "⬆ 导入 .md",
+	"btn.tools.inject": "F9 · 注入日志",
+	"btn.tools.link": "F5 · 手动连线",
+	"btn.tools.linkNeed": "F5 · 手动连线（需选中）",
+	"btn.tools.evolog": "F6 · 演化日志",
+	"exit.fullscreen": "✕ 退出全屏",
 	"empty.title": "海马体还没有记忆",
-	"empty.body": "点击「新建分支」手动写入，或让我在任务中用 memory_write 记录你的偏好、交流方式与工作状态。项目记忆按项目文件夹隔离，随项目推进自动沉淀。",
+	"empty.body": "点击「新建分支」手动写入，或让我在任务中用 memory_write 记录你的偏好、交流方式与工作状态。",
 	"loading": "记忆读取中…",
+	"loading2": "加载中…",
 	"error": "记忆服务不可用：",
 	"edit.title": "编辑记忆分支",
 	"new.title": "新建记忆分支",
@@ -1130,6 +1135,8 @@ const zh = {
 	"field.content": "内容",
 	"field.strength": "强度",
 	"field.status": "状态",
+	"field.title.placeholder": "一句话概括这条记忆",
+	"field.tags.placeholder": "例如: 偏好, 中文, 任务A（留空自动生成）",
 	"status.active": "活跃",
 	"status.archived": "已归档",
 	"history": "修正历史",
@@ -1138,6 +1145,7 @@ const zh = {
 	"archived": "已归档",
 	"restored": "已恢复",
 	"confirm.delete": "确定彻底删除这条记忆？此操作不可恢复。",
+	"err.title.empty": "标题不能为空",
 	"source.agent": "Agent",
 	"source.user": "用户",
 	"source.system": "系统",
@@ -1145,18 +1153,17 @@ const zh = {
 	"strength.mid": "稳定",
 	"strength.low": "易忘",
 	"legend.title": "图例",
-	"legend.kind": "种类",
 	"legend.activation": "激活强度",
-	"legend.strong": "牢固记忆",
-	"legend.weak": "易忘记忆",
 	"legend.links": "突触连接",
-	"ctrl.learning": "自学习",
-	"ctrl.evolution": "自演化",
+	"legend.anchor": "金色锚环 = 工作记忆激活",
+	"legend.cross": "⟡ 紫色星标 = 联想交汇（连线交叉产生的新想法）",
+	"conn.legend": "连接含义",
+	"tagcloud.title": "标签云 · 点击筛选 / 右键合并",
+	"tagcloud.empty": "暂无标签",
 	"ctrl.learning.en": "SELF-LEARNING",
 	"ctrl.evolution.en": "SELF-EVOLUTION",
 	"ctrl.neurons": "神经元",
 	"ctrl.synapses": "突触",
-	"ctrl.connections": "连接",
 	"ctrl.fitness": "适应度",
 	"ctrl.pruned": "已修剪",
 	"ctrl.merged": "已合并",
@@ -1167,6 +1174,15 @@ const zh = {
 	"ctrl.evolve": "演化：合并近重复",
 	"ctrl.prune": "修剪弱连接",
 	"ctrl.pruneWeak": "修剪弱记忆",
+	"tut.title": "📖 小白教程",
+	"tut.what": "这是什么：",
+	"tut.what.desc": "海马体记忆是 Agent 的「长期记忆」插件，像大脑的海马体一样把信息沉淀下来。",
+	"tut.cap": "执行什么能力：",
+	"tut.cap.desc": "「记忆」标签页 + memory_write/read/search/edit/forget 等工具 + 3D 神经网络可视化 + 自学习/自演化。",
+	"tut.done": "做了什么：",
+	"tut.done.desc": "每条记忆是一个神经元，相关记忆自动连线（突触）；搜索时相关节点点亮、无关变暗；定期合并重复、修剪弱连接。",
+	"tut.why": "为什么要这样：",
+	"tut.why.desc": "模型本身不记得上次对话；把关键信息存下来并在需要时自动注入，Agent 才能记住你的偏好与项目进度。",
 	"status.selected": "选中",
 	"status.kind": "种类",
 	"status.activation": "激活",
@@ -1177,29 +1193,219 @@ const zh = {
 	"status.gen": "Gen",
 	"status.lr": "LR",
 	"status.fit": "Fit",
+	"canvas.click": "单击节点 = 聚焦",
+	"canvas.drag": "拖拽 = 旋转",
+	"canvas.zoom": "滚轮 = 缩放",
+	"canvas.reset": "双击 = 重置视图",
+	"quality.good": "优",
+	"quality.mid": "中",
+	"quality.low": "低",
+	"quality.prefix": "质量",
+	"list.active": "活跃",
+	"list.archived": "归档",
+	"f9.title": "F9 注入日志（对话前自动/工具/刷新）",
+	"f5.title": "F5 手动突触编辑（连接/断开）",
+	"f6.title": "F6 演化日志（自循环进化历史）",
+	"link.a": "记忆 A id",
+	"link.b": "记忆 B id",
+	"link.weight": "连接权重",
+	"link.current": "当前连接",
+	"link.connect": "建立连接",
+	"link.disconnect": "断开连接",
+	"evo.epochGen": "Epoch {e} · Gen {g}",
+	"evo.merged": "合并:",
+	"evo.pruned": "修剪:",
+	"evo.fitness": "fitness:",
+	"evo.lr": "lr:",
 	"evolved": "演化完成",
 	"prunedDone": "修剪完成",
-	"fed": "轨迹喂养完成",
-	"btn.feed": "喂养轨迹"
+	"btn.feed": "喂养轨迹",
+	"notify.dedup": "检测到相似记忆，已合并强化原记忆",
+	"notify.hideWeak": "已隐藏弱连接（<0.3）；再次按 E 恢复显示",
+	"notify.fed": "轨迹喂养：{n} 条事件 → 写入「{t}」（{c} 字）",
+	"notify.fedReason": "轨迹喂养：{n} 条事件（{r}）",
+	"notify.fedFail": "喂养失败：",
+	"notify.evolved": "演化完成：合并 {m} · 修剪连接 {p} · Gen {g}",
+	"notify.pruned": "修剪完成：归档 {n} 条弱记忆 · 修剪连接 {p}",
+	"notify.export": "已导出 {n} 条记忆（.md）",
+	"notify.exportFail": "导出失败：",
+	"notify.import": "导入完成：新增 {i} · 去重合并 {d}",
+	"notify.importFail": "导入失败：",
+	"notify.mergeTag": "已合并 {n} 条记忆的标签",
+	"notify.mergeTagFail": "合并失败：",
+	"notify.link": "已连接两记忆，权重 {w}",
+	"notify.linkFail": "连接失败：",
+	"notify.unlink": "已断开两记忆间的连接",
+	"notify.unlinkNone": "两记忆间原本无连接",
+	"notify.unlinkFail": "断开失败：",
+	"notify.review": "已复习强化：「{t}」 强度 {s}",
+	"notify.reviewFail": "复习失败：",
+	"notify.reviewAll": "已复习 {d}/{n} 条到期记忆",
+	"notify.archiveWdir": "已归档工作区「{n}」，连接已断开",
+	"notify.archiveFail": "归档失败：",
+	"confirm.archiveWdir": "归档工作区「{t}」？\n将断开该工作区的全部连接（含与偏好/交流的永久连接），除非再次使用该目录，否则不再重建。",
+	"hist.row": "· {time} — {by}：{summary}"
 };
 
 const en = {
 	"view.memory": "Memory",
-	"scope.global": "Global",
-	"scope.project": "Project",
+	"tab.hint": "Hippocampus Memory",
 	"stats.neurons": "Neurons",
 	"stats.connections": "Links",
 	"stats.activation": "Activation",
 	"stats.epoch": "Epoch",
 	"stats.fitness": "Fitness",
-	"search.placeholder": "Search memory…",
+	"search.placeholder": "Search memory… (drives network)",
 	"filter.all": "All",
+	"kind.preference": "Preference",
+	"kind.communication": "Style",
+	"kind.workstate": "Work state",
+	"kind.insight": "Insight",
+	"kind.other": "Other",
+	"kind.workdir": "Workspace",
 	"btn.new": "+ New branch",
+	"btn.refresh": "Refresh",
 	"btn.edit": "Edit",
+	"btn.archive": "Archive",
+	"btn.restore": "Restore",
+	"btn.delete": "Delete",
 	"btn.save": "Save",
 	"btn.cancel": "Cancel",
+	"btn.export": "Export",
+	"btn.import": "Import",
+	"btn.review": "Due",
+	"btn.fullscreen": "⛶ Full",
+	"btn.tools": "⚙ Tools",
+	"btn.tools.export": "⬇ Export .md",
+	"btn.tools.import": "⬆ Import .md",
+	"btn.tools.inject": "F9 · Inject log",
+	"btn.tools.link": "F5 · Link",
+	"btn.tools.linkNeed": "F5 · Link (select first)",
+	"btn.tools.evolog": "F6 · Evolve log",
+	"exit.fullscreen": "✕ Exit",
 	"empty.title": "No memory yet",
-	"loading": "Loading…"
+	"empty.body": "Click + New branch, or ask the agent to record preferences / work state with memory_write.",
+	"loading": "Loading memory…",
+	"loading2": "Loading…",
+	"error": "Memory service unavailable:",
+	"edit.title": "Edit branch",
+	"new.title": "New branch",
+	"field.title": "Title",
+	"field.kind": "Kind",
+	"field.tags": "Tags (comma-separated, empty = auto)",
+	"field.content": "Content",
+	"field.strength": "Strength",
+	"field.status": "Status",
+	"field.title.placeholder": "One-line summary of this memory",
+	"field.tags.placeholder": "e.g. preference, chinese (empty = auto)",
+	"status.active": "Active",
+	"status.archived": "Archived",
+	"history": "History",
+	"saved": "Saved ✓",
+	"deleted": "Deleted",
+	"archived": "Archived",
+	"restored": "Restored",
+	"confirm.delete": "Permanently delete this memory? This cannot be undone.",
+	"err.title.empty": "Title cannot be empty",
+	"source.agent": "Agent",
+	"source.user": "User",
+	"source.system": "System",
+	"strength.high": "Strong",
+	"strength.mid": "Stable",
+	"strength.low": "Weak",
+	"legend.title": "Legend",
+	"legend.activation": "Activation",
+	"legend.links": "Synapses",
+	"legend.anchor": "Gold ring = active working memory",
+	"legend.cross": "⟡ purple star = cross-link idea (new thought from intersecting links)",
+	"conn.legend": "Link types",
+	"tagcloud.title": "Tag cloud · click filter / right-click merge",
+	"tagcloud.empty": "No tags yet",
+	"ctrl.learning.en": "SELF-LEARNING",
+	"ctrl.evolution.en": "SELF-EVOLUTION",
+	"ctrl.neurons": "Neurons",
+	"ctrl.synapses": "Synapses",
+	"ctrl.fitness": "Fitness",
+	"ctrl.pruned": "Pruned",
+	"ctrl.merged": "Merged",
+	"ctrl.gen": "Gen",
+	"ctrl.active": "ACTIVE",
+	"ctrl.paused": "PAUSED",
+	"ctrl.toggle": "Toggle learning (Space)",
+	"ctrl.evolve": "Evolve: merge near-dups",
+	"ctrl.prune": "Prune weak links",
+	"ctrl.pruneWeak": "Prune weak memories",
+	"tut.title": "📖 Tutorial",
+	"tut.what": "What is this: ",
+	"tut.what.desc": "Hippocampus Memory is the agent's long-term memory plugin — like the brain's hippocampus, it consolidates information.",
+	"tut.cap": "Capabilities: ",
+	"tut.cap.desc": "Memory tab + memory_write/read/search/edit/forget tools + 3D neural network visualization + self-learning / self-evolution.",
+	"tut.done": "What it does: ",
+	"tut.done.desc": "Each memory is a neuron; related memories auto-connect (synapses); searching lights up relevant nodes and dims others; duplicates merge and weak links are pruned.",
+	"tut.why": "Why: ",
+	"tut.why.desc": "The model doesn't remember previous chats; storing key info and auto-injecting it keeps the agent aligned with your preferences and project progress.",
+	"status.selected": "Selected",
+	"status.kind": "Kind",
+	"status.activation": "Activation",
+	"status.degree": "Links",
+	"status.age": "Age",
+	"status.none": "No node selected — click to inspect",
+	"status.fps": "FPS",
+	"status.gen": "Gen",
+	"status.lr": "LR",
+	"status.fit": "Fit",
+	"canvas.click": "Click node = focus",
+	"canvas.drag": "Drag = rotate",
+	"canvas.zoom": "Wheel = zoom",
+	"canvas.reset": "Double-click = reset",
+	"quality.good": "Good",
+	"quality.mid": "Fair",
+	"quality.low": "Weak",
+	"quality.prefix": "Quality",
+	"list.active": "Active",
+	"list.archived": "Archived",
+	"f9.title": "F9 Inject log (auto / tool / refresh)",
+	"f5.title": "F5 Manual synapse edit (link / unlink)",
+	"f6.title": "F6 Evolve log (self-evolution history)",
+	"link.a": "Memory A id",
+	"link.b": "Memory B id",
+	"link.weight": "Link weight",
+	"link.current": "Current links",
+	"link.connect": "Connect",
+	"link.disconnect": "Disconnect",
+	"evo.epochGen": "Epoch {e} · Gen {g}",
+	"evo.merged": "Merged:",
+	"evo.pruned": "Pruned:",
+	"evo.fitness": "fitness:",
+	"evo.lr": "lr:",
+	"evolved": "Evolved",
+	"prunedDone": "Pruned",
+	"btn.feed": "Feed trajectory",
+	"notify.dedup": "Similar memory found, merged & reinforced",
+	"notify.hideWeak": "Weak links hidden (<0.3); press E to restore",
+	"notify.fed": "Trajectory fed: {n} events → 「{t}」({c} chars)",
+	"notify.fedReason": "Trajectory fed: {n} events ({r})",
+	"notify.fedFail": "Feed failed: ",
+	"notify.evolved": "Evolved: merged {m} · pruned {p} · Gen {g}",
+	"notify.pruned": "Pruned: archived {n} weak memories · trimmed {p} links",
+	"notify.export": "Exported {n} memories (.md)",
+	"notify.exportFail": "Export failed: ",
+	"notify.import": "Imported: {i} new · {d} deduped",
+	"notify.importFail": "Import failed: ",
+	"notify.mergeTag": "Merged tag on {n} memories",
+	"notify.mergeTagFail": "Merge failed: ",
+	"notify.link": "Linked two memories, weight {w}",
+	"notify.linkFail": "Link failed: ",
+	"notify.unlink": "Unlinked two memories",
+	"notify.unlinkNone": "No link existed between them",
+	"notify.unlinkFail": "Unlink failed: ",
+	"notify.review": "Reviewed & reinforced 「{t}」 strength {s}",
+	"notify.reviewFail": "Review failed: ",
+	"notify.reviewAll": "Reviewed {d}/{n} due memories",
+	"notify.archiveWdir": "Archived workspace 「{n}」，links removed",
+	"notify.archiveFail": "Archive failed: ",
+	"confirm.archiveWdir": "Archive workspace 「{t}」?\nAll its links (incl. permanent preference/style links) will be removed, and won't rebuild unless the workspace is used again.",
+	"hist.row": "· {time} — {by}: {summary}"
 };
 
 exports.zh = zh;
@@ -1569,7 +1775,7 @@ exports.injectStyles = injectStyles;
 // 主视图：记忆标签页装配（数据加载 / 搜索 / 演化 / 列表 / 画布 / 面板）
 const React = require("react");
 const { useState, useEffect, useRef, useMemo, useCallback, Fragment, createElement: h } = React;
-const { zh } = require("./i18n.js");
+const { zh, en } = require("./i18n.js");
 const { KIND_COLORS, KINDS, REASONS } = require("./constants.js");
 const { remoteCall } = require("./remote.js");
 const { GraphCanvas } = require("./components/canvas.js");
@@ -1599,7 +1805,15 @@ function prefetchMemory(ctx) {
 
 function MemoryView(props) {
 	const { t: tIn } = props;
-	const t = (key) => (tIn ? tIn(key) : (zh[key] ?? key));
+	// v5.8：界面语言手动切换（cn/en，不依赖 DSH 全局语言）；t 支持 {param} 插值
+	const [uiLang, setUiLang] = useState("zh");
+	const t = useCallback((key, params) => {
+		const d = uiLang === "en" ? en : zh;
+		let s = d[key] ?? (uiLang === "en" ? zh[key] : key) ?? key;
+		if (s && params) s = String(s).replace(/\{(\w+)\}/g, (_, k) => (params[k] !== void 0 ? String(params[k]) : "{" + k + "}"));
+		return s;
+	}, [uiLang]);
+	const toggleLang = useCallback(() => setUiLang((v) => (v === "zh" ? "en" : "zh")), []);
 	const [branches, setBranches] = useState(MEM_CACHE.branches);
 	const [graph, setGraph] = useState(MEM_CACHE.graph);
 	const [meta, setMeta] = useState(MEM_CACHE.meta);
@@ -1775,7 +1989,7 @@ function MemoryView(props) {
 		} else {
 			const res = await remoteCall(ctx, "create", { ...data, source: "user", ...scopeArgs });
 			if (!res.ok) throw new Error(res.error?.message ?? "create failed");
-			if (res.value?.dedup) notify("检测到相似记忆，已合并强化原记忆");
+			if (res.value?.dedup) notify(t("notify.dedup"));
 		}
 		setEditing(null);
 		notify(t("saved"));
@@ -1803,7 +2017,7 @@ function MemoryView(props) {
 		const res = await remoteCall(ctx, "evolve", scopeArgs);
 		if (!res.ok) return;
 		const v = res.value ?? {};
-		notify(t("evolved") + "：合并 " + (v.merged ?? 0) + " · 修剪连接 " + (v.prunedLinks ?? 0) + " · Gen " + (v.meta?.generation ?? 0));
+		notify(t("notify.evolved", { m: v.merged ?? 0, p: v.prunedLinks ?? 0, g: v.meta?.generation ?? 0 }));
 		setGraph(res.value);
 		await loadAll(true);
 	}, [ctx, loadAll, notify, t, scopeArgs]);
@@ -1813,7 +2027,7 @@ function MemoryView(props) {
 		const res = await remoteCall(ctx, "prune", scopeArgs);
 		if (!res.ok) return;
 		const v = res.value ?? {};
-		notify(t("prunedDone") + "：归档 " + (v.pruned ?? 0) + " 条弱记忆 · 修剪连接 " + (v.prunedLinks ?? 0));
+		notify(t("notify.pruned", { n: v.pruned ?? 0, p: v.prunedLinks ?? 0 }));
 		setGraph(res.value);
 		await loadAll(true);
 	}, [ctx, loadAll, notify, t, scopeArgs]);
@@ -1822,7 +2036,7 @@ function MemoryView(props) {
 	const [pruneTick, setPruneTick] = useState(0);
 	const doPruneView = useCallback(() => {
 		setPruneTick((v) => v + 1);
-		notify("已隐藏弱连接（<0.3）；再次按 E 恢复显示");
+		notify(t("notify.hideWeak"));
 	}, [notify]);
 
 	// 轨迹喂养：把当前对话的「轨迹」内容（用户/助手/工具消息，
@@ -1830,16 +2044,15 @@ function MemoryView(props) {
 	// 每小时定时任务自动增量喂养。显式携带 sessionId，确保命中当前会话轨迹。
 	const feed = useCallback(async () => {
 		const res = await remoteCall(ctx, "feed", { ...scopeArgs, sessionId: sessionIdOf(), sinceMs: 0 });
-		if (!res.ok) { notify("喂养失败：" + (res.error?.message ?? "未知")); return; }
+		if (!res.ok) { notify(t("notify.fedFail") + (res.error?.message ?? "?")); return; }
 		const v = res.value ?? {};
-		const detail = v.wrote
-			? " → 写入「" + (v.title ?? "会话精华") + "」（" + (v.chars ?? 0) + " 字）"
-			: v.reason
-				? "（" + v.reason + "）"
-				: "";
-		notify("轨迹喂养：" + (v.fed ?? 0) + " 条事件" + detail + (v.size?.triggered ? " · 存储超限已自动优化" : ""));
+		if (v.wrote) {
+			notify(t("notify.fed", { n: v.fed ?? 0, t: v.title ?? "session", c: v.chars ?? 0 }) + (v.size?.triggered ? " ⚠" : ""));
+		} else {
+			notify(t("notify.fedReason", { n: v.fed ?? 0, r: v.reason ?? "" }));
+		}
 		await loadAll(true);
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// ---- v5 复习调度：间隔重复到期计算（与后端 reviewIntervalDays 同公式） ----
 	// 注意：必须定义在 filtered 之前（filtered 会引用 showReviewOnly / dueIds）
@@ -1910,10 +2123,10 @@ function MemoryView(props) {
 	// 用户主动归档工作区目录（断开其全部连接，含偏好/交流永久连接）
 	const archiveWorkdir = useCallback(async (workdirPath) => {
 		const res = await remoteCall(ctx, "archiveWorkdir", { path: workdirPath });
-		if (!res.ok) { notify("归档失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已归档工作区「" + (workdirPath.split(/[/\\]+/).filter(Boolean).pop() ?? workdirPath) + "」，连接已断开");
+		if (!res.ok) { notify(t("notify.archiveFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.archiveWdir", { n: workdirPath.split(/[/\\]+/).filter(Boolean).pop() ?? workdirPath }));
 		await loadAll(true);
-	}, [ctx, loadAll, notify]);
+	}, [ctx, loadAll, notify, t]);
 
 	// 节点度数（来自突触图）
 	const degreeMap = useMemo(() => {
@@ -1940,7 +2153,7 @@ function MemoryView(props) {
 	// 导出记忆为 Markdown 文件
 	const onExport = useCallback(async () => {
 		const res = await remoteCall(ctx, "exportAll", scopeArgs);
-		if (!res.ok) { notify("导出失败：" + (res.error?.message ?? "未知")); return; }
+		if (!res.ok) { notify(t("notify.exportFail") + (res.error?.message ?? "?")); return; }
 		const text = res.value?.text ?? "";
 		const count = (text.match(/^##\s/gm) ?? []).length;
 		const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
@@ -1950,8 +2163,8 @@ function MemoryView(props) {
 		a.download = "hippocampus-memory-" + new Date().toISOString().slice(0, 10) + ".md";
 		a.click();
 		URL.revokeObjectURL(url);
-		notify("已导出 " + count + " 条记忆（.md）");
-	}, [ctx, notify, scopeArgs]);
+		notify(t("notify.export", { n: count }));
+	}, [ctx, notify, scopeArgs, t]);
 
 	// 导入记忆（Markdown/文本）
 	const onImportFile = useCallback(async (e) => {
@@ -1961,21 +2174,21 @@ function MemoryView(props) {
 		try {
 			const text = await file.text();
 			const res = await remoteCall(ctx, "importAll", { text, ...scopeArgs });
-			if (!res.ok) { notify("导入失败：" + (res.error?.message ?? "未知")); return; }
-			notify("导入完成：新增 " + (res.value?.imported ?? 0) + " · 去重合并 " + (res.value?.dedup ?? 0));
+			if (!res.ok) { notify(t("notify.importFail") + (res.error?.message ?? "?")); return; }
+			notify(t("notify.import", { i: res.value?.imported ?? 0, d: res.value?.dedup ?? 0 }));
 			await loadAll(true);
 		} catch (err) {
-			notify("导入失败：" + String(err?.message ?? err));
+			notify(t("notify.importFail") + String(err?.message ?? err));
 		}
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// 合并/重命名标签
 	const mergeTag = useCallback(async (tag) => {
-		const to = window.prompt("把标签「" + tag + "」合并/重命名为：", tag);
+		const to = window.prompt(uiLang === "en" ? "Merge/rename tag \"" + tag + "\" to:" : "把标签「" + tag + "」合并/重命名为：", tag);
 		if (!to || to.trim() === tag) return;
 		const res = await remoteCall(ctx, "tagRename", { from: tag, to: to.trim(), ...scopeArgs });
-		if (!res.ok) { notify("合并失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已合并 " + (res.value?.renamed ?? 0) + " 条记忆的标签");
+		if (!res.ok) { notify(t("notify.mergeTagFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.mergeTag", { n: res.value?.renamed ?? 0 }));
 		await loadAll(true);
 	}, [ctx, loadAll, notify, scopeArgs]);
 
@@ -2011,7 +2224,9 @@ function MemoryView(props) {
 		return () => document.removeEventListener("pointerdown", onDocClick);
 	}, [toolsOpen]);
 
-	const INJECT_MODES = { auto: "对话前自动", tool: "工具调取", refresh: "界面刷新" };
+	const INJECT_MODES = uiLang === "en"
+		? { auto: "Auto", tool: "Tool", refresh: "Refresh" }
+		: { auto: "对话前自动", tool: "工具调取", refresh: "界面刷新" };
 	const fmtTime = useCallback((ts) => {
 		if (!ts) return "";
 		const d = new Date(ts);
@@ -2022,10 +2237,10 @@ function MemoryView(props) {
 	// 复习一条记忆
 	const doReview = useCallback(async (id) => {
 		const res = await remoteCall(ctx, "review", { id, ...scopeArgs });
-		if (!res.ok) { notify("复习失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已复习强化：「" + (res.value?.title ?? "") + "」 强度 " + (res.value?.strength ?? 0).toFixed(2));
+		if (!res.ok) { notify(t("notify.reviewFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.review", { t: res.value?.title ?? "", s: (res.value?.strength ?? 0).toFixed(2) }));
 		await loadAll(true);
-	}, [ctx, loadAll, notify, scopeArgs]);
+	}, [ctx, loadAll, notify, scopeArgs, t]);
 
 	// 批量复习全部到期记忆
 	const reviewAllDue = useCallback(async () => {
@@ -2034,10 +2249,10 @@ function MemoryView(props) {
 		for (const id of dueIds) {
 			try { await remoteCall(ctx, "review", { id, ...scopeArgs }); done++; } catch { /* 单条失败继续 */ }
 		}
-		notify("已复习 " + done + "/" + dueIds.size + " 条到期记忆");
+		notify(t("notify.reviewAll", { d: done, n: dueIds.size }));
 		setShowReviewOnly(false);
 		await loadAll(true);
-	}, [ctx, dueIds, loadAll, notify, scopeArgs]);
+	}, [ctx, dueIds, loadAll, notify, scopeArgs, t]);
 
 	// 切换时间线视图时拉取一次
 	const loadTimeline = useCallback(async () => {
@@ -2082,21 +2297,21 @@ function MemoryView(props) {
 	const doLink = useCallback(async () => {
 		if (!linkA || !linkB || linkA === linkB) return;
 		const res = await remoteCall(ctx, "linkManual", { a: linkA, b: linkB, weight: linkWeight, ...scopeArgs });
-		if (!res.ok) { notify("连接失败：" + (res.error?.message ?? "未知")); return; }
-		notify("已连接两记忆，权重 " + (res.value?.weight ?? linkWeight).toFixed(2));
+		if (!res.ok) { notify(t("notify.linkFail") + (res.error?.message ?? "?")); return; }
+		notify(t("notify.link", { w: (res.value?.weight ?? linkWeight).toFixed(2) }));
 		setShowLinker(false);
 		await loadAll(true);
-	}, [ctx, linkA, linkB, linkWeight, loadAll, notify, scopeArgs]);
+	}, [ctx, linkA, linkB, linkWeight, loadAll, notify, scopeArgs, t]);
 
 	// 手动断开突触
 	const doUnlink = useCallback(async () => {
 		if (!linkA || !linkB || linkA === linkB) return;
 		const res = await remoteCall(ctx, "unlinkManual", { a: linkA, b: linkB, ...scopeArgs });
-		if (!res.ok) { notify("断开失败：" + (res.error?.message ?? "未知")); return; }
-		notify(res.value?.unlinked ? "已断开两记忆间的连接" : "两记忆间原本无连接");
+		if (!res.ok) { notify(t("notify.unlinkFail") + (res.error?.message ?? "?")); return; }
+		notify(res.value?.unlinked ? t("notify.unlink") : t("notify.unlinkNone"));
 		setShowLinker(false);
 		await loadAll(true);
-	}, [ctx, linkA, linkB, loadAll, notify, scopeArgs]);
+	}, [ctx, linkA, linkB, loadAll, notify, scopeArgs, t]);
 
 	// 左侧控制面板（图例 + 自学习 + 自演化 —— 真实数据与操作）
 	const leftPanel = h("div", { className: "hp-left" },
@@ -2119,26 +2334,26 @@ function MemoryView(props) {
 					t("legend.links")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-anchor" }),
-					"金色锚环 = 工作记忆激活"),
+					t("legend.anchor")),
 				h("div", { className: "hp-legend-hint" },
 					h("span", { className: "hp-legend-cross" }),
-					"⟡ 紫色星标 = 联想交汇（连线交叉产生的新想法）"))),
+					t("legend.cross")))),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
 				h("i", { style: { color: "#7fa8ff" } }),
-				"连接含义"),
+				t("conn.legend")),
 			h("div", { className: "hp-legend" },
 				REASONS.map((r) => h("div", { className: "hp-legend-row", key: r.label },
 					h("span", { className: "hp-legend-line", style: { background: r.color, color: r.color } }),
 					r.label)))),
 		h("div", { className: "hp-panel" },
-			h("div", { className: "hp-panel-title hp-collapse", onClick: () => setTagCloudOpen((v) => !v), title: tagCloudOpen ? "折叠标签云" : "展开标签云" },
+			h("div", { className: "hp-panel-title hp-collapse", onClick: () => setTagCloudOpen((v) => !v), title: tagCloudOpen ? t("tagcloud.title") : t("tagcloud.title") },
 				h("i", { style: { color: "#ffd479" } }),
-				"标签云 · 点击筛选 / 右键合并",
+				t("tagcloud.title"),
 				h("span", { className: "hp-collapse-arrow" }, tagCloudOpen ? "▾" : "▸")),
 			tagCloudOpen ? h("div", { className: "hp-tag-cloud" },
-				tagCloud.length === 0 ? h("div", { className: "hp-legend-hint" }, "暂无标签") : null,
-				tagCloud.map(({ tag, count }) => h("span", { key: tag, className: "hp-tag-chip", "data-on": tagFilter === tag || undefined, title: "点击筛选 · 右键合并", onClick: () => setTagFilter(tagFilter === tag ? null : tag), onContextMenu: (e) => { e.preventDefault(); mergeTag(tag); } }, tag + " " + count)))
+				tagCloud.length === 0 ? h("div", { className: "hp-legend-hint" }, t("tagcloud.empty")) : null,
+				tagCloud.map(({ tag, count }) => h("span", { key: tag, className: "hp-tag-chip", "data-on": tagFilter === tag || undefined, title: t("tagcloud.title"), onClick: () => setTagFilter(tagFilter === tag ? null : tag), onContextMenu: (e) => { e.preventDefault(); mergeTag(tag); } }, tag + " " + count)))
 				: null),
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
@@ -2152,12 +2367,12 @@ function MemoryView(props) {
 			h("div", { className: "hp-ctrl-btns" },
 				h("button", { className: "hp-btn", onClick: () => setRunning((r) => !r) }, t("ctrl.toggle")))),
 		// 小白教程：置于「开关学习」按钮下方，解释工具是什么/能力/做了什么/为什么
-		h("button", { className: "hp-tut-toggle", onClick: () => setShowTutorial((v) => !v) }, (showTutorial ? "▾ " : "▸ ") + "📖 小白教程"),
+		h("button", { className: "hp-tut-toggle", onClick: () => setShowTutorial((v) => !v) }, (showTutorial ? "▾ " : "▸ ") + t("tut.title")),
 		showTutorial ? h("div", { className: "hp-tut" },
-			h("div", { className: "hp-tut-item" }, h("b", null, "这是什么："), "海马体记忆是 Agent 的「长期记忆」插件，像大脑的海马体一样把信息沉淀下来。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "执行什么能力："), "「记忆」标签页 + memory_write/read/search/edit/forget 等工具 + 3D 神经网络可视化 + 自学习/自演化。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "做了什么："), "每条记忆是一个神经元，相关记忆自动连线（突触）；搜索时相关节点点亮、无关变暗；定期合并重复、修剪弱连接。"),
-			h("div", { className: "hp-tut-item" }, h("b", null, "为什么要这样："), "模型本身不记得上次对话；把关键信息存下来并在需要时自动注入，Agent 才能记住你的偏好与项目进度，避免重复提问和上下文污染。"))
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.what")), t("tut.what.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.cap")), t("tut.cap.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.done")), t("tut.done.desc")),
+			h("div", { className: "hp-tut-item" }, h("b", null, t("tut.why")), t("tut.why.desc")))
 			: null,
 		h("div", { className: "hp-panel" },
 			h("div", { className: "hp-panel-title" },
@@ -2189,19 +2404,21 @@ function MemoryView(props) {
 					h("button", { className: "hp-chip", "data-on": kindFilter === null || undefined, onClick: () => setKindFilter(null) }, t("filter.all")),
 					KINDS.map((k) => h("button", { className: "hp-chip", "data-on": kindFilter === k || undefined, key: k, onClick: () => setKindFilter(kindFilter === k ? null : k) }, t("kind." + k)))),
 				h("button", { className: "hp-btn hp-btn-primary", onClick: () => { setIsNew(true); setEditing({}); } }, t("btn.new")),
-				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: "间隔重复到期待复习" }, "待复习 " + dueCount) : null,
+				dueCount > 0 ? h("button", { className: "hp-btn hp-review", "data-on": showReviewOnly || undefined, onClick: () => setShowReviewOnly((v) => !v), title: t("btn.review") }, t("btn.review") + " " + dueCount) : null,
 				h("button", { className: "hp-btn", onClick: loadAll }, t("btn.refresh")),
 				// v5.3：全屏专注 —— 隐藏左右/顶部工具栏，3D 视图占满（Esc / 画布内按钮退出）
-				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: "全屏查看 3D 网络（Esc 退出）" }, "⛶ 全屏"),
+				h("button", { className: "hp-btn hp-btn-primary", onClick: () => setFocusMode(true), title: t("btn.fullscreen") }, t("btn.fullscreen")),
+				// v5.8：界面语言切换（cn / en）
+				h("button", { className: "hp-btn" + (uiLang === "en" ? " hp-btn-primary" : ""), onClick: toggleLang, title: uiLang === "en" ? "切换中文" : "Switch to English" }, uiLang === "en" ? "中 / EN" : "EN / 中"),
 				// v5.2：次要工具收纳进「工具」下拉（导出/导入/F9/F5/F6），顶栏不再拥挤
 				h("div", { className: "hp-tools", ref: toolsRef },
-					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: "导出/导入/注入日志/手动连线/演化日志" }, "⚙ 工具 " + (toolsOpen ? "▾" : "▸")),
+					h("button", { className: "hp-btn" + (toolsOpen ? " hp-btn-primary" : ""), onClick: () => setToolsOpen((v) => !v), title: t("btn.tools") }, t("btn.tools") + " " + (toolsOpen ? "▾" : "▸")),
 					toolsOpen ? h("div", { className: "hp-tools-menu" },
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); onExport(); } }, "⬇ 导出 .md"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); importRef.current?.click(); } }, "⬆ 导入 .md"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openInjectLog(); } }, "F9 · 注入日志"),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openLinker(); }, disabled: !selectedId }, "F5 · 手动连线" + (selectedId ? "" : "（需选中）")),
-						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openEvolog(); } }, "F6 · 演化日志"))
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); onExport(); } }, t("btn.tools.export")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); importRef.current?.click(); } }, t("btn.tools.import")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openInjectLog(); } }, t("btn.tools.inject")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openLinker(); }, disabled: !selectedId }, selectedId ? t("btn.tools.link") : t("btn.tools.linkNeed")),
+						h("button", { className: "hp-tools-item", onClick: () => { setToolsOpen(false); openEvolog(); } }, t("btn.tools.evolog")))
 						: null),
 				h("input", { ref: importRef, type: "file", accept: ".md,.markdown,.txt,text/markdown,text/plain", style: { display: "none" }, onChange: onImportFile })),
 			h("div", { className: "hp-body" },
@@ -2237,11 +2454,11 @@ function MemoryView(props) {
 						}),
 							// v5.3：右侧分类抽屉盒（按种类分组，可折叠）
 							h("div", { className: "hp-list" },
-								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, "活跃 " + activeCount + " · 归档 " + archivedCount) : null,
+								archivedCount > 0 ? h("div", { className: "hp-card-meta", style: { padding: "0 4px" } }, t("list.active") + " " + activeCount + " · " + t("list.archived") + " " + archivedCount) : null,
 								kindGroups.map(([kind, items]) => {
 									const collapsed = collapsedKinds.has(kind);
 									return h(Fragment, { key: kind },
-										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: collapsed ? "展开 " + t("kind." + kind) : "折叠 " + t("kind." + kind) },
+										h("div", { className: "hp-group-head", onClick: () => toggleKind(kind), title: (collapsed ? (uiLang === "en" ? "Expand " : "展开 ") : (uiLang === "en" ? "Collapse " : "折叠 ")) + t("kind." + kind) },
 											h("span", { className: "hp-group-dot", style: { background: KIND_COLORS[kind] ?? KIND_COLORS.other, color: KIND_COLORS[kind] ?? KIND_COLORS.other } }),
 											h("span", { className: "hp-group-name" }, t("kind." + kind)),
 											h("span", { className: "hp-group-count" }, String(items.length)),
@@ -2272,56 +2489,56 @@ function MemoryView(props) {
 			// F9：注入日志模态框
 			showInjectLog ? h("div", { className: "hp-modal", onClick: () => setShowInjectLog(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F9 注入日志（对话前自动/工具/刷新）"),
+					h("div", { className: "hp-modal-title" }, t("f9.title")),
 					h("div", { className: "hp-inject-log" },
 						injectLogData ? injectLogData.map((e) =>
 							h("div", { key: e.id, className: "hp-log-row" },
 								h("span", { className: "hp-log-time" }, fmtTime(e.ts)),
 								h("span", { className: "hp-log-mode", "data-mode": e.mode }, INJECT_MODES[e.mode] ?? e.mode),
-								h("span", { className: "hp-log-count" }, e.count + " 条"),
-								h("span", { className: "hp-log-chars" }, e.chars + " 字"),
+								h("span", { className: "hp-log-count" }, e.count + (uiLang === "en" ? " items" : " 条")),
+								h("span", { className: "hp-log-chars" }, e.chars + (uiLang === "en" ? " chars" : " 字")),
 								e.title ? h("span", { className: "hp-log-title" }, e.title) : null
 							)
-						) : h("div", { className: "hp-loading" }, "加载中…")))) : null,
+						) : h("div", { className: "hp-loading" }, t("loading2"))))) : null,
 			// F5：手动突触连接/断开模态框
 			showLinker ? h("div", { className: "hp-modal", onClick: () => setShowLinker(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F5 手动突触编辑（连接/断开）"),
+					h("div", { className: "hp-modal-title" }, t("f5.title")),
 					h("div", { className: "hp-field" },
-						h("label", null, "记忆 A id"),
-						h("input", { className: "hp-input", type: "text", value: linkA, onChange: (e) => setLinkA(e.target.value), placeholder: selectedId ? selectedId : "输入记忆 id" })),
+						h("label", null, t("link.a")),
+						h("input", { className: "hp-input", type: "text", value: linkA, onChange: (e) => setLinkA(e.target.value), placeholder: selectedId ? selectedId : (uiLang === "en" ? "enter memory id" : "输入记忆 id") })),
 					h("div", { className: "hp-field" },
-						h("label", null, "记忆 B id"),
-						h("input", { className: "hp-input", type: "text", value: linkB, onChange: (e) => setLinkB(e.target.value), placeholder: "输入记忆 id" })),
+						h("label", null, t("link.b")),
+						h("input", { className: "hp-input", type: "text", value: linkB, onChange: (e) => setLinkB(e.target.value), placeholder: uiLang === "en" ? "enter memory id" : "输入记忆 id" })),
 					h("div", { className: "hp-field" },
-						h("label", null, "连接权重 " + linkWeight.toFixed(2)),
+						h("label", null, t("link.weight") + " " + linkWeight.toFixed(2)),
 						h("input", { className: "hp-range", type: "range", min: "0.05", max: "1", step: "0.05", value: linkWeight, onChange: (e) => setLinkWeight(parseFloat(e.target.value)) }),
 						h("span", { className: "hp-range-val" }, linkWeight.toFixed(2))),
 					linkRelations && linkRelations.length > 0 ? h("div", { className: "hp-field" },
-						h("label", null, "当前连接（" + selectedId + "）"),
+						h("label", null, t("link.current") + " (" + selectedId + ")"),
 						h("div", { className: "hp-link-list" },
-							linkRelations.map((l) => h("span", { key: l.other, className: "hp-link-item", onClick: () => l.other === linkA ? setLinkB(l.other) : setLinkA(l.other), title: "点击填入 " + l.title }, l.title + " (" + l.weight.toFixed(2) + ")")))) : null,
+							linkRelations.map((l) => h("span", { key: l.other, className: "hp-link-item", onClick: () => l.other === linkA ? setLinkB(l.other) : setLinkA(l.other), title: (uiLang === "en" ? "click to fill " : "点击填入 ") + l.title }, l.title + " (" + l.weight.toFixed(2) + ")")))) : null,
 					h("div", { className: "hp-modal-actions" },
-						h("button", { className: "hp-btn hp-btn-primary", onClick: doLink, disabled: !linkA || !linkB || linkA === linkB }, "建立连接"),
-						h("button", { className: "hp-btn", onClick: doUnlink, disabled: !linkA || !linkB || linkA === linkB }, "断开连接"),
-						h("button", { className: "hp-btn", onClick: () => setShowLinker(false) }, "取消")))) : null,
+						h("button", { className: "hp-btn hp-btn-primary", onClick: doLink, disabled: !linkA || !linkB || linkA === linkB }, t("link.connect")),
+						h("button", { className: "hp-btn", onClick: doUnlink, disabled: !linkA || !linkB || linkA === linkB }, t("link.disconnect")),
+						h("button", { className: "hp-btn", onClick: () => setShowLinker(false) }, t("btn.cancel"))))) : null,
 			// F6：演化日志模态框
 			showEvolog ? h("div", { className: "hp-modal", onClick: () => setShowEvolog(false) },
 				h("div", { className: "hp-modal-box", onClick: (e) => e.stopPropagation() },
-					h("div", { className: "hp-modal-title" }, "F6 演化日志（自循环进化历史）"),
+					h("div", { className: "hp-modal-title" }, t("f6.title")),
 					h("div", { className: "hp-evolog-list" },
 						evologData ? evologData.map((e) =>
 							h("div", { key: e.id, className: "hp-evolog-row" },
 								h("div", { className: "hp-evolog-head" },
-									h("span", { className: "hp-evolog-epoch" }, "Epoch " + e.epoch + " · Gen " + e.generation),
+									h("span", { className: "hp-evolog-epoch" }, t("evo.epochGen", { e: e.epoch, g: e.generation })),
 									h("span", { className: "hp-evolog-time" }, fmtTime(e.ts))),
 								h("div", { className: "hp-evolog-stats" },
-									h("span", null, "合并: " + e.merged),
-									h("span", null, "修剪: " + e.prunedLinks),
-									h("span", null, "fitness: " + (e.fitnessAfter ?? 0).toFixed(3)),
-									h("span", null, "lr: " + (e.lr ?? 0.01).toFixed(3)))
+									h("span", null, t("evo.merged") + " " + e.merged),
+									h("span", null, t("evo.pruned") + " " + e.prunedLinks),
+									h("span", null, t("evo.fitness") + " " + (e.fitnessAfter ?? 0).toFixed(3)),
+									h("span", null, t("evo.lr") + " " + (e.lr ?? 0.01).toFixed(3)))
 							)
-						) : h("div", { className: "hp-loading" }, "加载中…")))) : null
+						) : h("div", { className: "hp-loading" }, t("loading2"))))) : null
 		);
 }
 
